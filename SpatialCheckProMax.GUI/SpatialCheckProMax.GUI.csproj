@@ -73,7 +73,7 @@
     <PackageReference Include="Microsoft.VisualBasic" Version="10.3.0" />
     
     <!-- gRPC 클라이언트 -->
-    <PackageReference Include="Grpc.Net.Client" Version="2.71.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.76.0" />
     <PackageReference Include="Google.Protobuf" Version="3.33.1" />
     <PackageReference Include="Grpc.Tools" Version="2.72.0">
       <PrivateAssets>all</PrivateAssets>
