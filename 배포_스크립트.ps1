@@ -1,5 +1,6 @@
 # SpatialCheckProMax 배포 스크립트
 # Self-contained 배포 버전 생성
+# 버전: 2.0 | 최종 수정: 2026-01-04
 
 param(
     [string]$OutputDir = ".\publish",
@@ -8,7 +9,7 @@ param(
 )
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "SpatialCheckProMax 배포 버전 생성" -ForegroundColor Cyan
+Write-Host "SpatialCheckProMax v2.0 배포 버전 생성" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -59,6 +60,21 @@ Write-Host ""
 Write-Host "✅ 빌드 완료!" -ForegroundColor Green
 Write-Host ""
 
+# AI 모델 파일 복사 (v2.0 신규)
+Write-Host "AI 모델 파일 복사 중..." -ForegroundColor Yellow
+$aiModelSource = "SpatialCheckProMax\Resources\Models"
+$aiModelDest = Join-Path $OutputDir "Resources\Models"
+if (Test-Path $aiModelSource) {
+    New-Item -ItemType Directory -Path $aiModelDest -Force | Out-Null
+    Copy-Item "$aiModelSource\*" -Destination $aiModelDest -Recurse -Force
+    Write-Host "  - geometry_corrector.onnx 복사 완료" -ForegroundColor Gray
+    Write-Host "  - model_metadata.json 복사 완료" -ForegroundColor Gray
+    Write-Host "AI 모델 파일 복사 완료" -ForegroundColor Green
+} else {
+    Write-Host "⚠️ AI 모델 파일을 찾을 수 없습니다: $aiModelSource" -ForegroundColor Yellow
+}
+Write-Host ""
+
 # GDAL Native DLL 수동 복사
 Write-Host "GDAL Native DLL 복사 중..." -ForegroundColor Yellow
 $gdalNativePath = "$env:USERPROFILE\.nuget\packages\gdal.native\3.10.3\build\gdal\x64"
@@ -88,7 +104,7 @@ if (Test-Path $gdalNativePath) {
 
 # GDAL 데이터 디렉토리 복사 (빌드 디렉토리에서)
 Write-Host "GDAL 데이터 디렉토리 복사 중..." -ForegroundColor Yellow
-$buildGdalPath = "SpatialCheckProMax.GUI\bin\Release\net8.0-windows\gdal"
+$buildGdalPath = "SpatialCheckProMax.GUI\bin\Release\net9.0-windows\gdal"
 if (Test-Path $buildGdalPath) {
     $gdalDestPath = Join-Path $OutputDir "gdal"
     if (Test-Path $gdalDestPath) {
@@ -159,7 +175,7 @@ if (Test-Path $licenseSource) {
     }
 
     # GDAL / PROJ 라이선스는 빌드 산출물에서 최신본을 가져오고, 없으면 템플릿 사용
-    $gdalLicenseSource = "SpatialCheckProMax.GUI\bin\Release\net8.0-windows\gdal\license.txt"
+    $gdalLicenseSource = "SpatialCheckProMax.GUI\bin\Release\net9.0-windows\gdal\license.txt"
     if (-not (Test-Path $gdalLicenseSource)) {
         $gdalLicenseSource = Join-Path $licenseSource "GDAL_LICENSE_template.txt"
     }
@@ -170,7 +186,7 @@ if (Test-Path $licenseSource) {
         Write-Host "  ⚠️ GDAL 라이선스 소스를 찾을 수 없습니다." -ForegroundColor Yellow
     }
 
-    $projLicenseSource = "SpatialCheckProMax.GUI\bin\Release\net8.0-windows\gdal\share\proj\COPYING"
+    $projLicenseSource = "SpatialCheckProMax.GUI\bin\Release\net9.0-windows\gdal\share\proj\COPYING"
     if (-not (Test-Path $projLicenseSource)) {
         $projLicenseSource = Join-Path $licenseSource "PROJ_COPYING_template.txt"
     }
@@ -213,6 +229,21 @@ if (Test-Path $configPath) {
     Write-Host "⚠️ Config 디렉토리를 찾을 수 없습니다!" -ForegroundColor Yellow
 }
 
+# AI 모델 파일 확인 (v2.0)
+$aiModelPath = Join-Path $OutputDir "Resources\Models\geometry_corrector.onnx"
+if (Test-Path $aiModelPath) {
+    $modelInfo = Get-Item $aiModelPath
+    $modelSizeMB = [math]::Round($modelInfo.Length / 1MB, 2)
+    Write-Host ""
+    Write-Host "AI 모델 파일 확인:" -ForegroundColor Cyan
+    Write-Host "  - 파일명: geometry_corrector.onnx" -ForegroundColor Gray
+    Write-Host "  - 크기: $modelSizeMB MB" -ForegroundColor Gray
+} else {
+    Write-Host ""
+    Write-Host "⚠️ AI 모델 파일을 찾을 수 없습니다!" -ForegroundColor Yellow
+    Write-Host "   AI 자동 수정 기능이 비활성화됩니다." -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "배포 준비 완료!" -ForegroundColor Green
@@ -220,8 +251,9 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "다음 단계:" -ForegroundColor Yellow
 Write-Host "1. $OutputDir 디렉토리에서 실행 파일 테스트" -ForegroundColor Gray
-Write-Host "2. 설치 프로그램 제작 (Inno Setup, WiX 등)" -ForegroundColor Gray
-Write-Host "3. 깨끗한 PC에서 테스트" -ForegroundColor Gray
+Write-Host "2. AI 자동 수정 기능 테스트 (v2.0)" -ForegroundColor Gray
+Write-Host "3. 설치 프로그램 제작 (Inno Setup, WiX 등)" -ForegroundColor Gray
+Write-Host "4. 깨끗한 PC에서 테스트" -ForegroundColor Gray
 Write-Host ""
 
 
