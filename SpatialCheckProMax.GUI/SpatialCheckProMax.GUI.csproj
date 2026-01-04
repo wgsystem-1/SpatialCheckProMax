@@ -1,0 +1,135 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <!-- 소스 파일 인코딩: UTF-8 (BOM 없음) -->
+    <Charset>UTF-8</Charset>
+    <NoWarn>CS8632;CS8602;CS8601;CS8604;CS8618;CS0618;CS1998;CA1416;CS0649</NoWarn>
+    <!-- 지침서 준수: 빌드 경고 완전 제거 -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningsAsErrors />
+    <WarningsNotAsErrors />
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    
+    <!-- 어셈블리 메타데이터 생성 비활성화 (직접 AssemblyInfo.cs 사용) -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    
+    <!-- 어셈블리 메타데이터 -->
+    <AssemblyTitle>국가기본도 DB 검수 시스템</AssemblyTitle>
+    <AssemblyDescription>File Geodatabase 검수 전문 애플리케이션</AssemblyDescription>
+    <AssemblyCompany>(주)우리강산시스템</AssemblyCompany>
+    <AssemblyProduct>Spatial Check Pro Max</AssemblyProduct>
+    <AssemblyCopyright>Copyright © WGSYSTEM 2025</AssemblyCopyright>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    
+    <!-- 애플리케이션 아이콘 설정 -->
+    <ApplicationIcon>Assets\Icons\app.ico</ApplicationIcon>
+    <!-- 빌드 타임스탬프: 매 빌드 시 현재 시각을 문자열로 생성 -->
+    <BuildTimestamp>$([System.DateTime]::Now.ToString("yyyy-MM-dd HH:mm:ss"))</BuildTimestamp>
+    <!-- InformationalVersion에 빌드 시각 포함 (파일 속성 정보용) -->
+    <AssemblyInformationalVersion>v1.0.0 | $(BuildTimestamp)</AssemblyInformationalVersion>
+    <SupportedOSPlatformVersion>7.0</SupportedOSPlatformVersion>
+
+    <!-- 배포 설정: Self-contained 배포를 위한 옵션 (주석 해제하여 사용) -->
+    <!-- <PublishSingleFile>true</PublishSingleFile> -->
+    <!-- <SelfContained>true</SelfContained> -->
+    <!-- <RuntimeIdentifier>win-x64</RuntimeIdentifier> -->
+    <!-- <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract> -->
+    <!-- <PublishTrimmed>false</PublishTrimmed> -->
+    
+    <!-- 성능 최적화 설정 -->
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <TieredCompilation>true</TieredCompilation>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <PackageReference Include="MaxRev.Gdal.Core" Version="3.10.0.306" />
+    <PackageReference Include="MaxRev.Gdal.WindowsRuntime.Minimal" Version="3.10.0.306" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.10" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.10" />
+    <PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.135" />
+    <PackageReference Include="NetTopologySuite" Version="2.6.0" />
+    <PackageReference Include="Serilog" Version="4.3.0" />
+    
+    <!-- 지도 라이브러리 제거 -->
+    
+    <!-- 지오메트리 처리 -->
+    <PackageReference Include="NetTopologySuite.IO.GeoJSON" Version="4.0.0" />
+    <PackageReference Include="PDFsharp-MigraDoc-WPF" Version="6.2.3" />
+    
+    <!-- PDF 생성 -->
+    <PackageReference Include="iTextSharp.LGPLv2.Core" Version="3.7.12" />
+    
+    <!-- Visual Basic 런타임 (InputBox 사용) -->
+    <PackageReference Include="Microsoft.VisualBasic" Version="10.3.0" />
+    
+    <!-- gRPC 클라이언트 -->
+    <PackageReference Include="Grpc.Net.Client" Version="2.71.0" />
+    <PackageReference Include="Google.Protobuf" Version="3.33.1" />
+    <PackageReference Include="Grpc.Tools" Version="2.72.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+
+  <ItemGroup>
+    <None Update="runtimes\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SpatialCheckProMax\SpatialCheckProMax.csproj" />
+  </ItemGroup>
+
+  <!-- MaxRev.Gdal 패키지가 네이티브 라이브러리를 자동으로 처리합니다 -->
+
+  <!-- Config 파일 복사 설정 -->
+  <ItemGroup>
+    <None Include="..\SpatialCheckProMax\Config\**\*.*">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <Link>Config\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </None>
+  </ItemGroup>
+
+  <!-- appsettings.json 파일 복사 설정 -->
+  <ItemGroup>
+    <None Include="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- AI ONNX 모델 파일 복사 설정 -->
+  <ItemGroup>
+    <None Include="..\SpatialCheckProMax\Resources\Models\**\*.onnx">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>Resources\Models\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </None>
+  </ItemGroup>
+
+  <!-- 아이콘 및 이미지 파일 설정 -->
+  <ItemGroup>
+    <!-- 아이콘 파일은 Content로 설정 (XAML에서 pack URI로 접근 가능) -->
+    <Content Include="Assets\Icons\app.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- 이미지 파일은 Resource로 설정 (XAML에서 사용) -->
+    <Resource Include="Assets\Images\logo.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Resource>
+    <Resource Include="Assets\Images\company_logo.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Resource>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,240 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  DOTNET_VERSION: '9.0.x'
+  SOLUTION_PATH: 'SpatialCheckProMax.sln'
+  TEST_PROJECT: 'SpatialCheckProMax.Tests/SpatialCheckProMax.Tests.csproj'
+  GUI_PROJECT: 'SpatialCheckProMax.GUI/SpatialCheckProMax.GUI.csproj'
+  API_PROJECT: 'SpatialCheckProMax.Api/SpatialCheckProMax.Api.csproj'
+  CORE_PROJECT: 'SpatialCheckProMax/SpatialCheckProMax.csproj'
+
+jobs:
+  # 빌드 및 테스트 작업
+  build-and-test:
+    name: Build and Test
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # GitVersion을 위한 전체 히스토리
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Cache NuGet packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.nuget/packages
+        key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+        restore-path: |
+          ~/.nuget/packages
+
+    - name: Restore dependencies
+      run: dotnet restore ${{ env.SOLUTION_PATH }}
+
+    - name: Build solution
+      run: dotnet build ${{ env.SOLUTION_PATH }} --configuration Release --no-restore
+
+    - name: Run tests
+      run: dotnet test ${{ env.TEST_PROJECT }} --configuration Release --no-build --verbosity normal --logger "trx;LogFileName=test-results.trx" --collect:"XPlat Code Coverage"
+
+    - name: Publish test results
+      uses: dorny/test-reporter@v1
+      if: always()
+      with:
+        name: Test Results
+        path: '**/test-results.trx'
+        reporter: dotnet-trx
+        fail-on-error: true
+
+    - name: Upload code coverage
+      uses: codecov/codecov-action@v4
+      if: always()
+      with:
+        files: '**/coverage.cobertura.xml'
+        fail_ci_if_error: false
+        verbose: true
+
+  # 빌드 아티팩트 생성 작업 (GUI)
+  build-artifacts-gui:
+    name: Build GUI Artifacts
+    needs: build-and-test
+    runs-on: windows-latest
+    if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/v')
+
+    strategy:
+      matrix:
+        runtime: [win-x64]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Restore dependencies
+      run: dotnet restore ${{ env.SOLUTION_PATH }}
+
+    - name: Publish GUI (Self-contained)
+      run: |
+        dotnet publish ${{ env.GUI_PROJECT }} `
+          -c Release `
+          -r ${{ matrix.runtime }} `
+          --self-contained true `
+          -p:PublishSingleFile=false `
+          -p:PublishReadyToRun=true `
+          -p:IncludeNativeLibrariesForSelfExtract=true `
+          -o ./publish/GUI-${{ matrix.runtime }}
+
+    - name: Create ZIP archive
+      run: |
+        Compress-Archive -Path ./publish/GUI-${{ matrix.runtime }}/* -DestinationPath SpatialCheckProMax-GUI-${{ matrix.runtime }}.zip
+
+    - name: Upload GUI artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: SpatialCheckProMax-GUI-${{ matrix.runtime }}
+        path: SpatialCheckProMax-GUI-${{ matrix.runtime }}.zip
+        retention-days: 30
+
+  # 빌드 아티팩트 생성 작업 (API)
+  build-artifacts-api:
+    name: Build API Artifacts
+    needs: build-and-test
+    runs-on: windows-latest
+    if: github.event_name == 'push' || startsWith(github.ref, 'refs/tags/v')
+
+    strategy:
+      matrix:
+        runtime: [win-x64, linux-x64]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Restore dependencies
+      run: dotnet restore ${{ env.SOLUTION_PATH }}
+
+    - name: Publish API (Self-contained)
+      run: |
+        dotnet publish ${{ env.API_PROJECT }} `
+          -c Release `
+          -r ${{ matrix.runtime }} `
+          --self-contained true `
+          -p:PublishSingleFile=true `
+          -p:PublishReadyToRun=true `
+          -o ./publish/API-${{ matrix.runtime }}
+
+    - name: Create ZIP archive
+      run: |
+        Compress-Archive -Path ./publish/API-${{ matrix.runtime }}/* -DestinationPath SpatialCheckProMax-API-${{ matrix.runtime }}.zip
+
+    - name: Upload API artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: SpatialCheckProMax-API-${{ matrix.runtime }}
+        path: SpatialCheckProMax-API-${{ matrix.runtime }}.zip
+        retention-days: 30
+
+  # GitHub Release 생성 (태그 푸시 시에만)
+  create-release:
+    name: Create GitHub Release
+    needs: [build-artifacts-gui, build-artifacts-api]
+    runs-on: windows-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: ./artifacts
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          ./artifacts/**/*.zip
+        draft: false
+        prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+        generate_release_notes: true
+        body: |
+          ## SpatialCheckProMax ${{ github.ref_name }}
+
+          ### 주요 기능
+          - File Geodatabase 품질 검증 (6단계 파이프라인)
+          - Windows WPF GUI 애플리케이션
+          - REST API 서버
+
+          ### 시스템 요구사항
+          - Windows 10/11 (64비트)
+          - .NET 9.0 Runtime (Self-contained 빌드 포함)
+
+          ### 다운로드
+          - **GUI 애플리케이션**: SpatialCheckProMax-GUI-win-x64.zip
+          - **API 서버 (Windows)**: SpatialCheckProMax-API-win-x64.zip
+          - **API 서버 (Linux)**: SpatialCheckProMax-API-linux-x64.zip
+
+          ### 설치 방법
+          1. 해당 플랫폼의 ZIP 파일 다운로드
+          2. 압축 해제
+          3. 실행 파일 실행
+             - GUI: `SpatialCheckProMax.GUI.exe`
+             - API: `SpatialCheckProMax.Api.exe` (Windows) 또는 `SpatialCheckProMax.Api` (Linux)
+
+          ### 문서
+          - [사용자 가이드](docs/03_사용법_가이드.md)
+          - [시스템 매뉴얼](docs/02_시스템_매뉴얼.md)
+          - [아키텍처 설계서](docs/04_아키텍처_설계서.md)
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 코드 품질 검사 (선택적)
+  code-quality:
+    name: Code Quality Analysis
+    runs-on: windows-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Restore dependencies
+      run: dotnet restore ${{ env.SOLUTION_PATH }}
+
+    - name: Build for analysis
+      run: dotnet build ${{ env.SOLUTION_PATH }} --configuration Debug --no-restore
+
+    - name: Run code analysis
+      run: |
+        dotnet format ${{ env.SOLUTION_PATH }} --verify-no-changes --verbosity diagnostic
+      continue-on-error: true

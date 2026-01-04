@@ -1,0 +1,27 @@
+{
+  "model_name": "GeometryGNN",
+  "version": "1.0.0",
+  "created": "2026-01-04T16:31:28.490344",
+  "config": {
+    "input_dim": 2,
+    "hidden_dim": 128,
+    "num_layers": 3,
+    "dropout": 0.1,
+    "learning_rate": 0.001,
+    "batch_size": 32,
+    "epochs": 100,
+    "noise_range": [
+      0.05,
+      0.3
+    ],
+    "max_vertices": 500
+  },
+  "input_format": {
+    "coordinates": "[batch, num_vertices, 2] float32 - (x, y) 좌표",
+    "mask": "[batch, num_vertices] float32 - 유효 정점 마스크 (1=유효, 0=패딩)"
+  },
+  "output_format": {
+    "offsets": "[batch, num_vertices, 2] float32 - (dx, dy) 보정 오프셋"
+  },
+  "usage": "corrected_coords = input_coords + offsets"
+}

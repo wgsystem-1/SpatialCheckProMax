@@ -1,0 +1,110 @@
+name: 기능 요청
+description: 새로운 기능이나 개선 사항을 제안합니다
+title: "[FEATURE] "
+labels: ["enhancement", "feature-request"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 기능 요청
+        새로운 기능이나 개선 사항을 제안해주세요!
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 해결하고자 하는 문제
+      description: 현재 어떤 문제나 불편함이 있나요?
+      placeholder: 현재 ...를 할 때 ...한 문제가 있습니다.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: 제안하는 솔루션
+      description: 어떤 기능이 추가되면 좋을까요?
+      placeholder: ...를 추가하면 ...를 할 수 있습니다.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 영향받는 컴포넌트
+      description: 어떤 컴포넌트에 기능이 추가되어야 하나요?
+      options:
+        - GUI 애플리케이션
+        - API 서버
+        - 핵심 라이브러리 (SpatialCheckProMax)
+        - Table Check (테이블 검사)
+        - Schema Check (스키마 검사)
+        - Geometry Check (지오메트리 검사)
+        - Attribute Check (속성 검사)
+        - Relation Check (관계 검사)
+        - Report Generation (보고서 생성)
+        - 문서
+        - 기타
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: 우선순위
+      description: 이 기능의 중요도는 어느 정도인가요?
+      options:
+        - High - 매우 중요한 기능
+        - Medium - 있으면 좋은 기능
+        - Low - 나중에 추가해도 되는 기능
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 대안
+      description: 다른 대안이나 해결 방법을 고려해보셨나요?
+      placeholder: ...와 같은 방법도 고려해봤습니다.
+    validations:
+      required: false
+
+  - type: textarea
+    id: use-cases
+    attributes:
+      label: 사용 사례
+      description: 이 기능이 어떤 상황에서 사용될까요?
+      placeholder: |
+        1. ...할 때
+        2. ...할 때
+        3. ...할 때
+    validations:
+      required: false
+
+  - type: textarea
+    id: mockups
+    attributes:
+      label: UI 목업 또는 스크린샷 (선택사항)
+      description: UI 변경이 포함된다면 목업이나 스크린샷을 첨부해주세요
+      placeholder: 이미지를 드래그 앤 드롭하거나 붙여넣으세요
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 추가 정보
+      description: 이 기능과 관련된 추가 정보가 있나요?
+      placeholder: 다른 관련 정보를 작성해주세요
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: 기여 의향
+      description: 이 기능을 직접 구현하실 의향이 있으신가요?
+      options:
+        - label: 이 기능을 구현하는 PR을 제출할 의향이 있습니다
+          required: false

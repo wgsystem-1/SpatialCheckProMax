@@ -1,0 +1,170 @@
+RuleId,NewRuleId,Phase,Description
+,COM_OMS_TBL_001,1,필수 테이블 누락 (데이터 없음)
+SCH_COL_MISSING,LOG_CNC_SCH_001,2,필수 컬럼(구조) 누락
+SCH_VAL_NULL,COM_OMS_ATR_001,2,필수 속성값(Value) 누락 (Not Null)
+SCH_VAL_DUPLICATE,LOG_DOM_ATR_001,2,속성값 중복 (Unique Key)
+SCH_FK_VIOLATION,LOG_CNC_SCH_002,2,외래키 참조 위반
+GEOM_DUPLICATE,LOG_TOP_GEO_001,3,지오메트리 중복
+GEOM_OVERLAP,LOG_TOP_GEO_002,3,지오메트리 겹침
+GEOM_SELF_INTERSECTION,LOG_TOP_GEO_003,3,지오메트리 자체 꼬임
+GEOM_SLIVER,LOG_TOP_GEO_004,3,슬리버 폴리곤
+GEOM_SHORT_LINE,LOG_TOP_GEO_005,3,짧은 선 객체
+GEOM_SMALL_AREA,LOG_TOP_GEO_006,3,작은 면적 객체
+GEOM_HOLE_ERROR,LOG_TOP_GEO_007,3,홀 폴리곤 오류
+GEOM_MIN_VERTEX,LOG_TOP_GEO_008,3,최소 정점 개수 부족
+GEOM_SPIKE,LOG_TOP_GEO_009,3,스파이크(Spike)
+GEOM_SELF_OVERLAP,LOG_TOP_GEO_010,3,자기 중첩
+GEOM_UNDERSHOOT,LOG_TOP_GEO_011,3,언더슛 (미달)
+GEOM_OVERSHOOT,LOG_TOP_GEO_012,3,오버슛 (초과)
+ATTR_CODE_BULD,THE_CLS_ATR_001,4,건물 용도 코드 오류
+ATTR_NOTZERO_FLOOR,LOG_DOM_ATR_002,4,층수 0 금지 (도메인)
+ATTR_PNU_19LEN,LOG_FMT_ATR_001,4,PNU 19자리 포맷
+ATTR_ALPT_LT2000,LOG_DOM_ATR_003,4,표고점 높이 범위
+ATTR_ALPT_ZERO_EXPLICIT,LOG_DOM_ATR_004,4,표고점 높이 0 금지
+CTRLN_HGT_LT2000,LOG_DOM_ATR_005,4,등고선 높이 범위
+CTRLN_HGT_MUL5,LOG_DOM_ATR_006,4,등고선 높이 5 배수
+CTRLN_HGT_MUL25_CODE,LOG_DOM_ATR_007,4,등고선 높이 25 배수 (조건부)
+ATTR_FEATNM_KR_TYPO,THE_ATT_ATR_001,4,지형지물명칭 오타
+ATTR_BATCNM_KR_TYPO,THE_ATT_ATR_002,4,부명칭 오타
+ATTR_BLDHGT_BASE_GT_MAX,LOG_CNC_ATR_001,4,기본높이 > 최고높이 (논리 모순)
+ATTR_BLDHGT_MAX_GT_FAC,LOG_CNC_ATR_002,4,최고높이 > 시설물높이 (논리 모순)
+CTRLN_ROAD_BT_RDS014_EQ15,LOG_DOM_ATR_008,4,도로폭 1.5 고정 (조건부)
+CTRLN_ROAD_BT_RDS010_RANGE,LOG_DOM_ATR_009,4,도로폭 범위 (조건부)
+CTRLN_ROADSE_NAME_NO_NOTNULL,COM_OMS_ATR_002,4,도로명/번호 필수 (조건부)
+CTRLN_ROAD_LANE_MIN,LOG_DOM_ATR_010,4,차로수 최소값
+CTRLN_ROAD_LANE_RDS010_EQ1,LOG_DOM_ATR_011,4,차로수 1 고정 (조건부)
+CTRLN_ROAD_LANE_RDS014_EQ1,LOG_DOM_ATR_012,4,차로수 1 고정 (조건부)
+CTRLN_ROAD_BT_MAJOR_GE30,LOG_DOM_ATR_013,4,도로폭 3.0 이상 (조건부)
+BULD_HEIGHT_NEW_NOTNULL,COM_OMS_ATR_003,4,신규건물 높이 필수
+BULD_HEIGHT_LOWEST_GT_BASE,LOG_CNC_ATR_003,4,최저높이 > 기본높이 (논리 모순)
+BULD_FEAT_NM_NULL,LOG_DOM_ATR_014,4,명칭 NULL 필수 (조건부)
+BULD_batc_nm_NULL,LOG_DOM_ATR_015,4,부명칭 NULL 필수 (조건부)
+RIVER_CTLN_FEAT_NM_NOTNULL,COM_OMS_ATR_004,4,하천명칭 필수 (조건부)
+RIVER_CTLN_RVR_NO_NOTNULL,COM_OMS_ATR_005,4,하천번호 필수 (조건부)
+ALL_TABLE_OBJECTID_NOTNULL,COM_OMS_ATR_006,4,OBJECTID 필수
+NFID_FORMAT,LOG_FMT_ATR_002,4,NFID 포맷
+객체변동구분_Code,THE_CLS_ATR_002,4,객체변동구분 코드
+건물구분_Code,THE_CLS_ATR_003,4,건물구분 코드
+건물기호구분_Code,THE_CLS_ATR_004,4,건물기호구분 코드
+건물부속시설구분_Code,THE_CLS_ATR_005,4,건물부속시설구분 코드
+건물용도구분_Code,THE_CLS_ATR_006,4,건물용도구분 코드
+경지경계구분_Code,THE_CLS_ATR_007,4,경지경계구분 코드
+관리기관코드_Code,THE_CLS_ATR_008,4,관리기관코드
+교통시설정보구분_Codetn_rlroad_ctln,THE_CLS_ATR_009_01,4,교통시설정보구분 코드 (철도중심선)
+교통시설정보구분_Codetn_rodway_bndry,THE_CLS_ATR_009_02,4,교통시설정보구분 코드 (도로경계면)
+교통시설정보구분_Codetn_rodway_bndryln,THE_CLS_ATR_009_03,4,교통시설정보구분 코드 (도로경계선)
+교통시설정보구분_Codetn_rodway_ctln,THE_CLS_ATR_009_04,4,교통시설정보구분 코드 (도로중심선)
+기준점구분_Code,THE_CLS_ATR_010,4,기준점구분 코드
+기준점등급_Code,THE_CLS_ATR_011,4,기준점등급 코드
+나루구분_Code,THE_CLS_ATR_012,4,나루구분 코드
+나무구분_Code,THE_CLS_ATR_013,4,나무구분 코드
+도로구분_Code_tn_rodway_bndry,THE_CLS_ATR_014_01,4,도로구분 코드 (도로경계면)
+도로구분_Code_tn_rodway_bndryln,THE_CLS_ATR_014_02,4,도로구분 코드 (도로경계선)
+도로구분_Code_tn_rodway_ctln,THE_CLS_ATR_014_03,4,도로구분 코드 (도로중심선)
+등고선구분_Code,THE_CLS_ATR_015,4,등고선구분 코드
+면형공항시설구분_Code,THE_CLS_ATR_016,4,면형공항시설구분 코드
+면형구조시설구분_Code,THE_CLS_ATR_017,4,면형구조시설구분 코드
+면형도로시설구분_Code,THE_CLS_ATR_018,4,면형도로시설구분 코드
+면형도로시설위상관계구분_Code,THE_CLS_ATR_019,4,면형도로시설위상관계구분 코드
+면형도로시설재질구분_Code,THE_CLS_ATR_020,4,면형도로시설재질구분 코드
+면형수로시설구분_Code,THE_CLS_ATR_021,4,면형수로시설구분 코드
+면형지형구분_Code,THE_CLS_ATR_022,4,면형지형구분 코드
+면형철도시설구분_Code,THE_CLS_ATR_023,4,면형철도시설구분 코드
+면형항만시설구분_Code,THE_CLS_ATR_024,4,면형항만시설구분 코드
+목장구분_Code,THE_CLS_ATR_025,4,목장구분 코드
+보도경계면구분_Code,THE_CLS_ATR_026,4,보도경계면구분 코드
+보도구분_Code,THE_CLS_ATR_027,4,보도구분 코드
+보도중심선구분_Code,THE_CLS_ATR_028,4,보도중심선구분 코드
+분리대유무_Code,THE_CLS_ATR_029,4,분리대유무 코드
+사용상태_Code,THE_CLS_ATR_030,4,사용상태 코드
+선형공항시설구분_Code,THE_CLS_ATR_031,4,선형공항시설구분 코드
+선형구조시설구분_Code,THE_CLS_ATR_032,4,선형구조시설구분 코드
+선형도로시설구분_Code,THE_CLS_ATR_033,4,선형도로시설구분 코드
+선형도로시설구조구분_Code,THE_CLS_ATR_034,4,선형도로시설구조구분 코드
+선형수로시설구분_Code,THE_CLS_ATR_035,4,선형수로시설구분 코드
+선형지형구분_Code,THE_CLS_ATR_036,4,선형지형구분 코드
+수정측량방법구분_Code,THE_CLS_ATR_037,4,수정측량방법구분 코드
+시설구역경계구분_Code,THE_CLS_ATR_038,4,시설구역경계구분 코드
+일방통행구분_Code,THE_CLS_ATR_039,4,일방통행구분 코드
+자동차전용도로구분_Code,THE_CLS_ATR_040,4,자동차전용도로구분 코드
+자전거도로중심선구분_Code,THE_CLS_ATR_041,4,자전거도로중심선구분 코드
+재질구분V6_Code_tn_buld_adcls,THE_CLS_ATR_042_01,4,재질구분 코드 (건물부속시설)
+재질구분V6_Code_tn_lnpgr,THE_CLS_ATR_042_02,4,재질구분 코드 (선형지형)
+재질구분V6_Code_tn_lnsfc,THE_CLS_ATR_042_03,4,재질구분 코드 (선형구조시설)
+재질구분V6_Code_tn_lnwtcors_fclty,THE_CLS_ATR_042_04,4,재질구분 코드 (선형수로시설)
+점형공항시설구분_Code_tn_ptafc,THE_CLS_ATR_043,4,점형공항시설구분 코드
+점형구조시설구분_Code_tn_ptsfc,THE_CLS_ATR_044,4,점형구조시설구분 코드
+점형도로시설구분_Code_tn_ptrfc,THE_CLS_ATR_045,4,점형도로시설구분 코드
+점형수로시설구분_Code_tn_ptwtcors_fclty,THE_CLS_ATR_046,4,점형수로시설구분 코드
+점형식생시설구분_Code_tn_ptvgt_fclty,THE_CLS_ATR_047,4,점형식생시설구분 코드
+점형지형구분_Code,THE_CLS_ATR_048,4,점형지형구분 코드
+점형철도시설구분_Code,THE_CLS_ATR_049,4,점형철도시설구분 코드
+점형항만시설구분_Code,THE_CLS_ATR_050,4,점형항만시설구분 코드
+제작방법_Code,THE_CLS_ATR_051,4,제작방법 코드
+주건물구분_Code,THE_CLS_ATR_052,4,주건물구분 코드
+철도구분_Code,THE_CLS_ATR_053,4,철도구분 코드
+철도사용상태_Code,THE_CLS_ATR_054,4,철도사용상태 코드
+철도선로유형구분_Code,THE_CLS_ATR_055,4,철도선로유형구분 코드
+철도표현구분_Code,THE_CLS_ATR_056,4,철도표현구분 코드
+축척구분_Code,THE_CLS_ATR_057,4,축척구분 코드
+포장재질구분_Code_tn_bcycl_ctln,THE_CLS_ATR_058_01,4,포장재질구분 코드 (자전거도로)
+포장재질구분_Code_tn_ftpth_bndry,THE_CLS_ATR_058_02,4,포장재질구분 코드 (보도경계면)
+포장재질구분_Code_tn_ftpth_ctln,THE_CLS_ATR_058_03,4,포장재질구분 코드 (보도중심선)
+포장재질구분_Code_tn_rodway_ctln,THE_CLS_ATR_058_04,4,포장재질구분 코드 (도로중심선)
+표고점구분_Code,THE_CLS_ATR_059,4,표고점구분 코드
+하천구분_Code_tn_river_bndry,THE_CLS_ATR_060_01,4,하천구분 코드 (하천경계)
+하천구분_Code_tn_river_ctln,THE_CLS_ATR_060_02,4,하천구분 코드 (하천중심선)
+하천구분_Code_tn_river_rt,THE_CLS_ATR_060_03,4,하천구분 코드 (하천경로)
+하천형태구분_Code,THE_CLS_ATR_061,4,하천형태구분 코드
+항만시설구조구분_Code,THE_CLS_ATR_062,4,항만시설구조구분 코드
+행정구역구분_Code,THE_CLS_ATR_063,4,행정구역구분 코드
+호소구분_Code,THE_CLS_ATR_064,4,호소구분 코드
+건물_건물부속시설_침범,LOG_TOP_REL_001,5,건물-부속시설 겹침
+건물_경지경계_침범,LOG_TOP_REL_002,5,건물-경지경계 겹침
+건물_도로경계면_침범,LOG_TOP_REL_003,5,건물-도로경계면 겹침
+건물_등고선_침범,LOG_TOP_REL_004,5,건물-등고선 교차
+건물_면형구조시설_침범,LOG_TOP_REL_005,5,건물-면형구조물 겹침
+건물_면형수로시설_침범,LOG_TOP_REL_006,5,건물-면형수로 겹침
+건물_보도경계면_침범,LOG_TOP_REL_007,5,건물-보도경계면 겹침
+건물_선형수로시설_침범,LOG_TOP_REL_008,5,건물-선형수로 교차
+건물_실폭하천_침범,LOG_TOP_REL_009,5,건물-실폭하천 겹침
+건물_점형수로시설_침범,LOG_TOP_REL_010,5,건물-점형수로 포함
+건물_표고점_침범,LOG_TOP_REL_011,5,건물-표고점 포함
+건물_하천경계_침범,LOG_TOP_REL_012,5,건물-하천경계 겹침
+건물_호소_침범,LOG_TOP_REL_013,5,건물-호소 겹침
+건물중심점_관계,LOG_TOP_REL_014,5,건물중심점 이탈
+결함있는_연결검사,LOG_TOP_REL_015,5,중심선 연결 결함
+경계면_중심선누락,COM_OMS_REL_001,5,경계면 내 중심선 누락
+경지경계_내부객체검사,LOG_TOP_REL_016,5,경지경계 내부 객체 오류
+경지경계_도로경계면_침범,LOG_TOP_REL_017,5,경지경계-도로 겹침
+경지경계_도로경계선_침범,LOG_TOP_REL_018,5,경지경계-도로선 교차
+경지경계_철도경계면_침범,LOG_TOP_REL_019,5,경지경계-철도 겹침
+경지경계_하천중심선_침범,LOG_TOP_REL_020,5,경지경계-하천선 교차
+교량하천명_일치검사,THE_CLS_REL_001,5,교량-하천 명칭 불일치
+도로경계면_관계,LOG_TOP_REL_021,5,도로선-경계면 이탈
+도로경계선_단절검사,LOG_TOP_REL_022,5,도로경계선 단절 (속성별)
+도로면형_경계선불일치,LOG_TOP_REL_023,5,도로면형-경계선 불일치
+도로시설_경계불일치_확장,LOG_TOP_REL_024,5,도로시설-경계면 이탈
+도로시설_관계,LOG_TOP_REL_025,5,도로시설-경계면 정점 불일치
+도로시설_철도경계불일치,LOG_TOP_REL_026,5,도로시설-철도경계 이탈
+도로중심선_꺽임검사,LOG_TOP_GEO_013,5,도로중심선 급경사 (관계성 검사지만 단독형태)
+도로중심선_단절검사,LOG_TOP_REL_027,5,도로중심선 단절
+도로중심선_속성불일치,LOG_CNC_REL_001,5,도로중심선 속성 불일치 (연결성)
+도로중심선_연결성,LOG_TOP_REL_028,5,도로중심선 미연결 (Undershoot)
+등고선_교차검사,LOG_TOP_REL_029,5,등고선 교차
+등고선_꺽임검사,LOG_TOP_GEO_014,5,등고선 급경사
+등고선_연결높이일치,LOG_CNC_REL_002,5,등고선 연결 높이 불일치
+면형도로시설_실폭하천_침범,LOG_TOP_REL_030,5,도로시설-실폭하천 겹침
+면형도로시설_호소_침범,LOG_TOP_REL_031,5,도로시설-호소 겹침
+선형끝점_초과미달검사,LOG_TOP_REL_032,5,도로선 끝점 이탈
+선형끝점_초과미달검사_철도,LOG_TOP_REL_033,5,철도선 끝점 이탈
+선형끝점_초과미달검사_하천,LOG_TOP_REL_034,5,하천선 끝점 이탈
+소로_미연결검사,LOG_TOP_REL_035,5,소로 미연결
+실폭하천_하천경계누락,LOG_TOP_REL_036,5,실폭하천 이탈
+차도_도로시설물관계검사,LOG_CNC_REL_003,5,차도-시설물 속성 불일치
+차도간_교차검사_경계면,LOG_TOP_REL_037,5,도로면-도로면 교차 (동일속성)
+차도간_교차검사_중심선,LOG_TOP_REL_038,5,도로선-도로선 교차 (동일속성)
+철도중심선_속성불일치,LOG_CNC_REL_004,5,철도선 속성 불일치
+표고점_위치간격검사,LOG_TOP_REL_039,5,표고점 간격 위반
+하천중심선_속성불일치,LOG_CNC_REL_005,5,하천선 속성 불일치
+홀겹침_객체검사,LOG_TOP_REL_040,5,홀 내부 중복 객체

@@ -1,0 +1,1692 @@
+using CsvHelper;
+using SpatialCheckProMax.Models;
+using SpatialCheckProMax.Models.Config;
+using SpatialCheckProMax.Models.Enums;
+using Microsoft.Extensions.Logging;
+using OSGeo.OGR;
+using System.Globalization;
+using SpatialCheckProMax.Services;
+using SpatialCheckProMax.Utils;
+
+namespace SpatialCheckProMax.Processors
+{
+    /// <summary>
+    /// 속성 검수 프로세서
+    /// </summary>
+    public class AttributeCheckProcessor : IAttributeCheckProcessor
+    {
+        private readonly ILogger<AttributeCheckProcessor> _logger;
+        private Dictionary<string, HashSet<string>>? _codelistCache;
+        private readonly IFeatureFilterService _featureFilterService;
+        private const ErrorSeverity DefaultSeverity = ErrorSeverity.Error;
+
+        public AttributeCheckProcessor(ILogger<AttributeCheckProcessor> logger, IFeatureFilterService? featureFilterService = null)
+        {
+            _logger = logger;
+            _featureFilterService = featureFilterService ?? new FeatureFilterService(
+                logger as ILogger<FeatureFilterService> ?? new LoggerFactory().CreateLogger<FeatureFilterService>(),
+                new SpatialCheckProMax.Models.Config.PerformanceSettings());
+        }
+
+        /// <summary>
+        /// 마지막 속성 검수에서 제외된 피처 수
+        /// </summary>
+        public int LastSkippedFeatureCount { get; private set; }
+
+        /// <summary>
+        /// Feature의 지오메트리에서 중심점 좌표를 추출합니다
+        /// - Polygon: PointOnSurface (내부 보장) → Centroid → Envelope 중심
+        /// - Line: 중간 정점
+        /// - Point: 그대로
+        /// </summary>
+        private (double X, double Y) ExtractCentroid(Feature feature)
+        {
+            if (feature == null)
+                return (0, 0);
+
+            try
+            {
+                var geometry = feature.GetGeometryRef();
+                if (geometry == null || geometry.IsEmpty())
+                    return (0, 0);
+
+                var geomType = geometry.GetGeometryType();
+                var flatType = (wkbGeometryType)((int)geomType & 0xFF);
+
+                // Point: 그대로 사용
+                if (flatType == wkbGeometryType.wkbPoint)
+                {
+                    return (geometry.GetX(0), geometry.GetY(0));
+                }
+
+                // MultiPoint: 첫 번째 점 사용
+                if (flatType == wkbGeometryType.wkbMultiPoint)
+                {
+                    if (geometry.GetGeometryCount() > 0)
+                    {
+                        var firstPoint = geometry.GetGeometryRef(0);
+                        if (firstPoint != null)
+                        {
+                            return (firstPoint.GetX(0), firstPoint.GetY(0));
+                        }
+                    }
+                }
+
+                // LineString: 중간 정점 사용
+                if (flatType == wkbGeometryType.wkbLineString)
+                {
+                    int pointCount = geometry.GetPointCount();
+                    if (pointCount > 0)
+                    {
+                        int midIndex = pointCount / 2;
+                        return (geometry.GetX(midIndex), geometry.GetY(midIndex));
+                    }
+                }
+
+                // MultiLineString: 첫 번째 LineString의 중간 정점
+                if (flatType == wkbGeometryType.wkbMultiLineString)
+                {
+                    if (geometry.GetGeometryCount() > 0)
+                    {
+                        var firstLine = geometry.GetGeometryRef(0);
+                        if (firstLine != null)
+                        {
+                            int pointCount = firstLine.GetPointCount();
+                            if (pointCount > 0)
+                            {
+                                int midIndex = pointCount / 2;
+                                return (firstLine.GetX(midIndex), firstLine.GetY(midIndex));
+                            }
+                        }
+                    }
+                }
+
+                // Polygon: PointOnSurface (내부 보장) → 외곽 링의 중간점
+                if (flatType == wkbGeometryType.wkbPolygon)
+                {
+                    try
+                    {
+                        using var pos = geometry.PointOnSurface();
+                        if (pos != null && !pos.IsEmpty())
+                        {
+                            return (pos.GetX(0), pos.GetY(0));
+                        }
+                    }
+                    catch { /* PointOnSurface 실패 시 폴백 */ }
+
+                    // 폴백: 외곽 링의 중간점
+                    if (geometry.GetGeometryCount() > 0)
+                    {
+                        var ring = geometry.GetGeometryRef(0);
+                        if (ring != null && ring.GetPointCount() > 0)
+                        {
+                            int midIndex = ring.GetPointCount() / 2;
+                            return (ring.GetX(midIndex), ring.GetY(midIndex));
+                        }
+                    }
+                }
+
+                // MultiPolygon: 첫 번째 Polygon의 PointOnSurface
+                if (flatType == wkbGeometryType.wkbMultiPolygon)
+                {
+                    try
+                    {
+                        using var pos = geometry.PointOnSurface();
+                        if (pos != null && !pos.IsEmpty())
+                        {
+                            return (pos.GetX(0), pos.GetY(0));
+                        }
+                    }
+                    catch { /* PointOnSurface 실패 시 폴백 */ }
+
+                    // 폴백: 첫 번째 Polygon의 외곽 링 중간점
+                    if (geometry.GetGeometryCount() > 0)
+                    {
+                        var firstPoly = geometry.GetGeometryRef(0);
+                        if (firstPoly != null && firstPoly.GetGeometryCount() > 0)
+                        {
+                            var ring = firstPoly.GetGeometryRef(0);
+                            if (ring != null && ring.GetPointCount() > 0)
+                            {
+                                int midIndex = ring.GetPointCount() / 2;
+                                return (ring.GetX(midIndex), ring.GetY(midIndex));
+                            }
+                        }
+                    }
+                }
+
+                // 기타: Envelope 중심 (최후의 수단)
+                var envelope = new Envelope();
+                geometry.GetEnvelope(envelope);
+                return ((envelope.MinX + envelope.MaxX) / 2.0, (envelope.MinY + envelope.MaxY) / 2.0);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "속성 검수 좌표 추출 실패");
+                return (0, 0);
+            }
+        }
+
+        /// <summary>
+        /// 코드리스트 파일을 로드합니다.
+        /// </summary>
+        public void LoadCodelist(string? codelistPath)
+        {
+            _codelistCache = null;
+
+            if (string.IsNullOrWhiteSpace(codelistPath) || !File.Exists(codelistPath))
+            {
+                _logger.LogInformation("코드리스트 파일이 지정되지 않았거나 존재하지 않습니다: {Path}", codelistPath);
+                return;
+            }
+
+            try
+            {
+                _codelistCache = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+                
+                using var reader = new StreamReader(codelistPath, System.Text.Encoding.UTF8);
+                using var csv = new CsvReader(reader, CultureInfo.InvariantCulture);
+                
+                csv.Read();
+                csv.ReadHeader();
+                
+                while (csv.Read())
+                {
+                    var codeSetId = csv.GetField<string>("CodeSetId");
+                    var codeValue = csv.GetField<string>("CodeValue");
+                    
+                    if (string.IsNullOrWhiteSpace(codeSetId) || string.IsNullOrWhiteSpace(codeValue))
+                        continue;
+                    
+                    if (!_codelistCache.ContainsKey(codeSetId))
+                    {
+                        _codelistCache[codeSetId] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    }
+                    
+                    _codelistCache[codeSetId].Add(codeValue);
+                }
+                
+                _logger.LogInformation("코드리스트 로드 완료: {Count}개 코드셋", _codelistCache.Count);
+                foreach (var kvp in _codelistCache)
+                {
+                    _logger.LogDebug("코드셋 {CodeSetId}: {Count}개 코드", kvp.Key, kvp.Value.Count);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "코드리스트 파일 로드 중 오류 발생: {Path}", codelistPath);
+                _codelistCache = null;
+            }
+        }
+
+        /// <summary>
+        /// 필드 정의에서 대소문자 무시로 인덱스를 찾습니다. 없으면 -1 반환
+        /// </summary>
+        private static int GetFieldIndexIgnoreCase(FeatureDefn def, string? fieldName)
+        {
+            if (string.IsNullOrWhiteSpace(fieldName)) return -1;
+            for (int i = 0; i < def.GetFieldCount(); i++)
+            {
+                using var fd = def.GetFieldDefn(i);
+                if (fd.GetName().Equals(fieldName, StringComparison.OrdinalIgnoreCase)) return i;
+            }
+            return -1;
+        }
+
+        public async Task<List<ValidationError>> ValidateAsync(string gdbPath, IValidationDataProvider dataProvider, List<AttributeCheckConfig> rules, IEnumerable<string>? validTableIds = null, CancellationToken token = default)
+        {
+            var errors = new List<ValidationError>();
+            var validTableSet = validTableIds != null ? new HashSet<string>(validTableIds, StringComparer.OrdinalIgnoreCase) : null;
+
+            // 임시 수정: dataProvider에서 gdbPath를 직접 얻을 수 없으므로, gdbPath 파라미터를 그대로 사용합니다.
+            // 이상적으로는 dataProvider를 통해 데이터를 읽어야 합니다.
+            using var ds = Ogr.Open(gdbPath, 0);
+            if (ds == null) return errors;
+
+            LastSkippedFeatureCount = 0;
+            for (int i = 0; i < ds.GetLayerCount(); i++)
+            {
+                var layer = ds.GetLayerByIndex(i);
+                if (layer == null)
+                {
+                    continue;
+                }
+
+                var layerName = layer.GetName() ?? $"Layer_{i}";
+                var filterResult = _featureFilterService.ApplyObjectChangeFilter(layer, "Attribute", layerName);
+                if (filterResult.Applied && filterResult.ExcludedCount > 0)
+                {
+                    LastSkippedFeatureCount += filterResult.ExcludedCount;
+                }
+            }
+
+            // GDB의 모든 레이어 로깅
+            _logger.LogInformation("GDB에 포함된 레이어 목록:");
+            for (int i = 0; i < ds.GetLayerCount(); i++)
+            {
+                using var layer = ds.GetLayerByIndex(i);
+                if (layer != null)
+                {
+                    _logger.LogInformation("  - 레이어 [{Index}]: {Name}", i, layer.GetName());
+                }
+            }
+
+            foreach (var rule in rules.Where(r => string.Equals(r.Enabled, "Y", StringComparison.OrdinalIgnoreCase) && !r.RuleId.TrimStart().StartsWith("#")))
+            {
+                token.ThrowIfCancellationRequested();
+                
+                _logger.LogDebug("속성 검수 규칙 처리 시작: RuleId={RuleId}, TableId={TableId}, FieldName={FieldName}, CheckType={CheckType}", 
+                    rule.RuleId, rule.TableId, rule.FieldName, rule.CheckType);
+
+                // 와일드카드 지원: TableId가 "*"인 경우 모든 레이어에 적용
+                if (rule.TableId == "*")
+                {
+                    int appliedLayerCount = 0;
+                    int ruleErrorCount = 0;
+                    
+                    _logger.LogInformation("와일드카드 규칙 시작: RuleId={RuleId}, 모든 레이어에 적용", rule.RuleId);
+                    
+                    for (int i = 0; i < ds.GetLayerCount(); i++)
+                    {
+                        var wildcardLayer = ds.GetLayerByIndex(i);
+                        if (wildcardLayer == null) continue;
+                        
+                        var layerName = wildcardLayer.GetName();
+                        
+                        // 유효한 테이블 목록이 있으면 필터링
+                        if (validTableSet != null && !validTableSet.Contains(layerName))
+                        {
+                            continue;
+                        }
+                        
+                        // 각 레이어에 대해 규칙 적용
+                        var layerErrors = await ProcessSingleLayerRuleAsync(gdbPath, wildcardLayer, rule, token);
+                        if (layerErrors.Count > 0)
+                        {
+                            errors.AddRange(layerErrors);
+                            ruleErrorCount += layerErrors.Count;
+                            appliedLayerCount++;
+                        }
+                    }
+                    
+                    _logger.LogInformation("와일드카드 규칙 완료: RuleId={RuleId}, 적용 레이어={AppliedCount}/{TotalCount}, 검출 오류={ErrorCount}개",
+                        rule.RuleId, appliedLayerCount, ds.GetLayerCount(), ruleErrorCount);
+                    
+                    continue; // 다음 규칙으로
+                }
+
+                // 일반 규칙: 특정 테이블 지정
+                var layer = GetLayerByIdOrName(ds, rule.TableId, rule.TableName);
+                if (layer == null)
+                {
+                    _logger.LogWarning("속성 검수: 레이어를 찾지 못했습니다: {TableId}/{TableName}", rule.TableId, rule.TableName);
+                    // 테이블명/아이디가 대소문자/접두사 차이로 불일치할 수 있어, 전체 레이어명 로깅으로 원인 파악 도움
+                    try
+                    {
+                        var names = new List<string>();
+                        for (int i = 0; i < ds.GetLayerCount(); i++)
+                        {
+                            using var ly = ds.GetLayerByIndex(i);
+                            if (ly != null) names.Add(ly.GetName());
+                        }
+                        _logger.LogInformation("GDB 레이어 목록: {Layers}", string.Join(", ", names));
+                    }
+                    catch { }
+                    continue;
+                }
+                
+                var featureCount = layer.GetFeatureCount(1);
+                _logger.LogDebug("레이어 {LayerName} 피처 수: {Count}", layer.GetName(), featureCount);
+
+                var defn = layer.GetLayerDefn();
+                
+                // 레이어의 모든 필드 목록 로깅 (디버깅용)
+                var fieldNames = new List<string>();
+                for (int i = 0; i < defn.GetFieldCount(); i++)
+                {
+                    using var fd = defn.GetFieldDefn(i);
+                    fieldNames.Add(fd.GetName());
+                }
+                _logger.LogDebug("레이어 {LayerName} 필드 목록: {Fields}", layer.GetName(), string.Join(", ", fieldNames));
+                
+                // 메인 필드 인덱스 조회(대소문자 무시)
+                int fieldIndex = GetFieldIndexIgnoreCase(defn, rule.FieldName);
+                if (fieldIndex == -1)
+                {
+                    _logger.LogWarning("속성 검수: 필드를 찾지 못했습니다: {TableId}.{Field}", rule.TableId, rule.FieldName);
+                    try
+                    {
+                        var fieldList = new List<string>();
+                        for (int i = 0; i < defn.GetFieldCount(); i++)
+                        {
+                            using var fd2 = defn.GetFieldDefn(i);
+                            fieldList.Add(fd2.GetName());
+                        }
+                        _logger.LogInformation("테이블 {TableId} 필드 목록: {Fields}", rule.TableId, string.Join(", ", fieldList));
+                    }
+                    catch { }
+                    continue;
+                }
+
+                var checkType = rule.CheckType?.Trim() ?? string.Empty;
+                int objIndex = -1;
+                int lowestIndex = -1;
+                int baseIndex = -1;
+                int maxIndex = -1;
+                int facilityIndex = -1;
+
+                if (checkType.Equals("buld_height_base_vs_max", StringComparison.OrdinalIgnoreCase) ||
+                    checkType.Equals("buld_height_max_vs_facility", StringComparison.OrdinalIgnoreCase) ||
+                    checkType.Equals("buld_height_lowest_vs_base", StringComparison.OrdinalIgnoreCase))
+                {
+                    objIndex = GetFieldIndexIgnoreCase(defn, "OBJFLTN_SE");
+                    lowestIndex = GetFieldIndexIgnoreCase(defn, "BLDLWT_HGT");
+                    baseIndex = GetFieldIndexIgnoreCase(defn, "BLDBSC_HGT");
+                    maxIndex = GetFieldIndexIgnoreCase(defn, "BLDHGT_HGT");
+                    if (checkType.Equals("buld_height_max_vs_facility", StringComparison.OrdinalIgnoreCase))
+                    {
+                        facilityIndex = GetFieldIndexIgnoreCase(defn, "BLFCHT_HGT");
+                    }
+
+                    var missingFields = new List<string>();
+                    if (objIndex < 0) missingFields.Add("OBJFLTN_SE");
+                    if (lowestIndex < 0) missingFields.Add("BLDLWT_HGT");
+                    if (baseIndex < 0) missingFields.Add("BLDBSC_HGT");
+                    if (checkType.Equals("buld_height_base_vs_max", StringComparison.OrdinalIgnoreCase) || 
+                        checkType.Equals("buld_height_max_vs_facility", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (maxIndex < 0) missingFields.Add("BLDHGT_HGT");
+                    }
+                    if (checkType.Equals("buld_height_max_vs_facility", StringComparison.OrdinalIgnoreCase) && facilityIndex < 0)
+                    {
+                        missingFields.Add("BLFCHT_HGT");
+                    }
+
+                    if (missingFields.Any())
+                    {
+                        _logger.LogWarning("속성 검수: 건물 높이 검증에 필요한 필드가 누락되었습니다. TableId={TableId}, RuleId={RuleId}, Fields={Fields}",
+                            rule.TableId,
+                            rule.RuleId,
+                            string.Join(", ", missingFields));
+                        continue;
+                    }
+                }
+
+                layer.ResetReading();
+                Feature? f;
+                while ((f = layer.GetNextFeature()) != null)
+                {
+                    using (f)
+                    {
+                        var fid = f.GetFID().ToString(CultureInfo.InvariantCulture);
+                        // NULL은 규칙별로 다르게 해석할 수 있도록 null 보전
+                        string? value = f.IsFieldNull(fieldIndex) ? null : f.GetFieldAsString(fieldIndex);
+
+                        if (checkType.Equals("buld_height_base_vs_max", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var error = EvaluateBuldBaseHigherThanMax(f, rule, fid, objIndex, lowestIndex, baseIndex, maxIndex);
+                            if (error != null)
+                            {
+                                errors.Add(error);
+                            }
+                            continue;
+                        }
+
+                        if (checkType.Equals("buld_height_max_vs_facility", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var error = EvaluateBuldMaxHigherThanFacility(f, rule, fid, objIndex, lowestIndex, baseIndex, maxIndex, facilityIndex);
+                            if (error != null)
+                            {
+                                errors.Add(error);
+                            }
+                            continue;
+                        }
+
+                        if (checkType.Equals("buld_height_lowest_vs_base", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var error = EvaluateBuldLowestHigherThanBase(f, rule, fid, objIndex, lowestIndex, baseIndex);
+                            if (error != null)
+                            {
+                                errors.Add(error);
+                            }
+                            continue;
+                        }
+
+                        if (checkType.Equals("ifmultipleofthencodein", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Parameters: NumericField;base;CodeField;code1|code2
+                            var p = (rule.Parameters ?? string.Empty).Split(';');
+                            var numericField = p.Length > 0 && !string.IsNullOrWhiteSpace(p[0]) ? p[0] : rule.FieldName;
+                            double baseVal = (p.Length > 1 && double.TryParse(p[1], NumberStyles.Any, CultureInfo.InvariantCulture, out var bv)) ? bv : 25;
+                            var codeField = p.Length > 2 ? p[2] : string.Empty;
+                            var codeList = p.Length > 3 ? p[3] : string.Empty;
+                            var allowed = new HashSet<string>((codeList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.OrdinalIgnoreCase);
+
+                            _logger.LogDebug("IfMultipleOfThenCodeIn 검수: RuleId={RuleId}, NumericField={NumericField}, BaseVal={BaseVal}, CodeField={CodeField}, AllowedCodes={AllowedCodes}", 
+                                rule.RuleId, numericField, baseVal, codeField, string.Join("|", allowed));
+
+                            var def = f.GetDefnRef();
+                            int idxNum = GetFieldIndexIgnoreCase(def, numericField);
+                            int idxCode = GetFieldIndexIgnoreCase(def, codeField);
+                            if (idxNum >= 0 && idxCode >= 0)
+                            {
+                                var valStr = f.IsFieldNull(idxNum) ? string.Empty : f.GetFieldAsString(idxNum) ?? string.Empty;
+                                var code = f.GetFieldAsString(idxCode) ?? string.Empty;
+                                bool isMultiple = IsMultiple(valStr, baseVal);
+                                bool violation = isMultiple && !allowed.Contains(code);
+                                
+                                _logger.LogDebug("  FID={FID}, {NumericField}={Value}, IsMultipleOf{BaseVal}={IsMultiple}, {CodeField}={Code}, Violation={Violation}", 
+                                    fid, numericField, valStr, baseVal, isMultiple, codeField, code, violation);
+                                
+                                if (violation)
+                                {
+                                    var (x, y) = ExtractCentroid(f);
+                                    errors.Add(new ValidationError
+                                    {
+                                        ErrorCode = rule.RuleId,
+                                        Message = $"{numericField}가 {baseVal}의 배수인 경우 {codeField}는 ({string.Join(',', allowed)}) 이어야 함. 현재='{code}'",
+                                        TableId = rule.TableId,
+                                        TableName = ResolveTableName(rule.TableId, rule.TableName),
+                                        FeatureId = fid,
+                                        FieldName = rule.FieldName,
+                                        Severity = DefaultSeverity,
+                                        X = x,
+                                        Y = y,
+                                        GeometryWKT = null
+                                    });
+                                }
+                            }
+                            else
+                            {
+                                _logger.LogWarning("IfMultipleOfThenCodeIn 검수 필드 인덱스 오류: NumericField={NumericField}(idx={IdxNum}), CodeField={CodeField}(idx={IdxCode})", 
+                                    numericField, idxNum, codeField, idxCode);
+                            }
+                            continue; // 다음 피처
+                        }
+
+                        // 조건부: 수치값이 배수가 아닌 경우 특정 코드여야 함
+                        if (checkType.Equals("ifnotmultipleofthencodein", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Parameters: NumericField;base;CodeField;code1|code2
+                            var p = (rule.Parameters ?? string.Empty).Split(';');
+                            var numericField = p.Length > 0 && !string.IsNullOrWhiteSpace(p[0]) ? p[0] : rule.FieldName;
+                            double baseVal = (p.Length > 1 && double.TryParse(p[1], NumberStyles.Any, CultureInfo.InvariantCulture, out var bv)) ? bv : 25;
+                            var codeField = p.Length > 2 ? p[2] : string.Empty;
+                            var codeList = p.Length > 3 ? p[3] : string.Empty;
+                            var allowed = new HashSet<string>((codeList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.OrdinalIgnoreCase);
+
+                            _logger.LogDebug("IfNotMultipleOfThenCodeIn 검수: RuleId={RuleId}, NumericField={NumericField}, BaseVal={BaseVal}, CodeField={CodeField}, AllowedCodes={AllowedCodes}", 
+                                rule.RuleId, numericField, baseVal, codeField, string.Join("|", allowed));
+
+                            var def = f.GetDefnRef();
+                            int idxNum = GetFieldIndexIgnoreCase(def, numericField);
+                            int idxCode = GetFieldIndexIgnoreCase(def, codeField);
+                            if (idxNum >= 0 && idxCode >= 0)
+                            {
+                                var valStr = f.IsFieldNull(idxNum) ? string.Empty : f.GetFieldAsString(idxNum) ?? string.Empty;
+                                var code = f.GetFieldAsString(idxCode) ?? string.Empty;
+                                bool isMultiple = IsMultiple(valStr, baseVal);
+                                bool violation = !isMultiple && !allowed.Contains(code);
+                                
+                                _logger.LogDebug("  FID={FID}, {NumericField}={Value}, IsMultipleOf{BaseVal}={IsMultiple}, {CodeField}={Code}, Violation={Violation}", 
+                                    fid, numericField, valStr, baseVal, isMultiple, codeField, code, violation);
+                                
+                                if (violation)
+                                {
+                                    var (x, y) = ExtractCentroid(f);
+                                    errors.Add(new ValidationError
+                                    {
+                                        ErrorCode = rule.RuleId,
+                                        Message = $"{numericField}가 {baseVal}의 배수가 아닌 경우 {codeField}는 ({string.Join(',', allowed)}) 이어야 함. 현재='{code}'",
+                                        TableId = rule.TableId,
+                                        TableName = ResolveTableName(rule.TableId, rule.TableName),
+                                        FeatureId = fid,
+                                        FieldName = rule.FieldName,
+                                        Severity = DefaultSeverity,
+                                        X = x,
+                                        Y = y,
+                                        GeometryWKT = null
+                                    });
+                                }
+                            }
+                            else
+                            {
+                                _logger.LogWarning("IfNotMultipleOfThenCodeIn 검수 필드 인덱스 오류: NumericField={NumericField}(idx={IdxNum}), CodeField={CodeField}(idx={IdxCode})", 
+                                    numericField, idxNum, codeField, idxCode);
+                            }
+                            continue; // 다음 피처
+                        }
+
+                        // 조건부: 특정 코드인 경우 지정된 코드 목록에 포함되지 않아야 함
+                        if (checkType.Equals("ifcodethennotin", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Parameters: CodeField;forbiddenCode1|forbiddenCode2
+                            var p = (rule.Parameters ?? string.Empty).Split(';');
+                            var codeField = p.Length > 0 ? p[0] : rule.FieldName;
+                            var forbiddenList = p.Length > 1 ? p[1] : string.Empty;
+                            var forbidden = new HashSet<string>((forbiddenList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.OrdinalIgnoreCase);
+
+                            _logger.LogDebug("IfCodeThenNotIn 검수: RuleId={RuleId}, CodeField={CodeField}, ForbiddenCodes={ForbiddenCodes}", 
+                                rule.RuleId, codeField, string.Join("|", forbidden));
+
+                            var def = f.GetDefnRef();
+                            int idxCode = GetFieldIndexIgnoreCase(def, codeField);
+                            if (idxCode >= 0)
+                            {
+                                var code = f.GetFieldAsString(idxCode) ?? string.Empty;
+                                bool violation = forbidden.Contains(code);
+                                
+                                _logger.LogDebug("  FID={FID}, {CodeField}={Code}, Violation={Violation}", 
+                                    fid, codeField, code, violation);
+                                
+                                if (violation)
+                                {
+                                    var (x, y) = ExtractCentroid(f);
+                                    errors.Add(new ValidationError
+                                    {
+                                        ErrorCode = rule.RuleId,
+                                        Message = $"{codeField}는 ({string.Join(',', forbidden)})을 사용할 수 없음. 현재='{code}'",
+                                        TableId = rule.TableId,
+                                        TableName = ResolveTableName(rule.TableId, rule.TableName),
+                                        FeatureId = fid,
+                                        FieldName = rule.FieldName,
+                                        Severity = DefaultSeverity,
+                                        X = x,
+                                        Y = y,
+                                        GeometryWKT = null
+                                    });
+                                }
+                            }
+                            else
+                            {
+                                _logger.LogWarning("IfCodeThenNotIn 검수 필드 인덱스 오류: CodeField={CodeField}(idx={IdxCode})", 
+                                    codeField, idxCode);
+                            }
+                            continue; // 다음 피처
+                        }
+
+                        // 조건부: 특정 코드인 경우 수치값이 지정 배수여야 함
+                        if (checkType.Equals("ifcodethenmultipleof", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Parameters: CodeField;codes;NumericField;base
+                            var p = (rule.Parameters ?? string.Empty).Split(';');
+                            var codeField = p.Length > 0 ? p[0] : string.Empty;
+                            var codeList = p.Length > 1 ? p[1] : string.Empty;
+                            var numericField = p.Length > 2 ? p[2] : rule.FieldName;
+                            double baseVal = (p.Length > 3 && double.TryParse(p[3], NumberStyles.Any, CultureInfo.InvariantCulture, out var bv)) ? bv : 25;
+                            var allowed = new HashSet<string>((codeList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.OrdinalIgnoreCase);
+
+                            _logger.LogDebug("IfCodeThenMultipleOf 검수: RuleId={RuleId}, CodeField={CodeField}, AllowedCodes={AllowedCodes}, NumericField={NumericField}, BaseVal={BaseVal}", 
+                                rule.RuleId, codeField, string.Join("|", allowed), numericField, baseVal);
+
+                            var def = f.GetDefnRef();
+                            int idxCode = GetFieldIndexIgnoreCase(def, codeField);
+                            int idxNum = GetFieldIndexIgnoreCase(def, numericField);
+                            if (idxCode >= 0 && idxNum >= 0)
+                            {
+                                var code = f.GetFieldAsString(idxCode) ?? string.Empty;
+                                var valStr = f.IsFieldNull(idxNum) ? string.Empty : f.GetFieldAsString(idxNum) ?? string.Empty;
+                                bool isTargetCode = allowed.Contains(code);
+                                bool isMultiple = IsMultiple(valStr, baseVal);
+                                bool violation = isTargetCode && !isMultiple;
+                                
+                                _logger.LogDebug("  FID={FID}, {CodeField}={Code}, IsTargetCode={IsTargetCode}, {NumericField}={Value}, IsMultipleOf{BaseVal}={IsMultiple}, Violation={Violation}", 
+                                    fid, codeField, code, isTargetCode, numericField, valStr, baseVal, isMultiple, violation);
+                                
+                                if (violation)
+                                {
+                                    var (x, y) = ExtractCentroid(f);
+                                    errors.Add(new ValidationError
+                                    {
+                                        ErrorCode = rule.RuleId,
+                                        Message = $"{codeField}가 ({string.Join(',', allowed)})인 경우 {numericField}는 {baseVal}의 배수여야 함. 현재='{valStr}'",
+                                        TableId = rule.TableId,
+                                        TableName = ResolveTableName(rule.TableId, rule.TableName),
+                                        FeatureId = fid,
+                                        FieldName = rule.FieldName,
+                                        Severity = DefaultSeverity,
+                                        X = x,
+                                        Y = y,
+                                        GeometryWKT = null
+                                    });
+                                }
+                            }
+                            else
+                            {
+                                _logger.LogWarning("IfCodeThenMultipleOf 검수 필드 인덱스 오류: CodeField={CodeField}(idx={IdxCode}), NumericField={NumericField}(idx={IdxNum})", 
+                                    codeField, idxCode, numericField, idxNum);
+                            }
+                            continue; // 다음 피처
+                        }
+
+                        // 조건부: 특정 코드인 경우 수치값이 지정값과 같아야 함
+                        if (checkType.Equals("ifcodethennumericequals", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Parameters: CodeField;codes;NumericField;value
+                            var p = (rule.Parameters ?? string.Empty).Split(';');
+                            if (p.Length >= 4)
+                            {
+                                var codeField = p[0];
+                                var codes = new HashSet<string>(p[1].Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.OrdinalIgnoreCase);
+                                var numericField = p[2];
+                                var targetStr = p[3];
+                                var def = f.GetDefnRef();
+                                int idxCode = GetFieldIndexIgnoreCase(def, codeField);
+                                int idxNum = GetFieldIndexIgnoreCase(def, numericField);
+                                if (idxCode >= 0 && idxNum >= 0)
+                                {
+                                    var code = f.GetFieldAsString(idxCode) ?? string.Empty;
+                                    if (codes.Contains(code))
+                                    {
+                                        var numStr = f.IsFieldNull(idxNum) ? string.Empty : f.GetFieldAsString(idxNum) ?? string.Empty;
+                                        if (!double.TryParse(numStr, NumberStyles.Any, CultureInfo.InvariantCulture, out var num) ||
+                                            !double.TryParse(targetStr, NumberStyles.Any, CultureInfo.InvariantCulture, out var target) || Math.Abs(num - target) > 1e-9)
+                                        {
+                                            var (x, y) = ExtractCentroid(f);
+                                            errors.Add(new ValidationError
+                                            {
+                                                ErrorCode = rule.RuleId,
+                                                Message = $"{codeField}가 지정코드({string.Join(',', codes)})인 경우 {numericField} = {targetStr} 이어야 함. 현재='{numStr}'",
+                                                TableId = rule.TableId,
+                                                TableName = ResolveTableName(rule.TableId, rule.TableName),
+                                                FeatureId = fid,
+                                                FieldName = numericField,
+                                                Severity = DefaultSeverity,
+                                                X = x,
+                                                Y = y,
+                                                GeometryWKT = null
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
+                        // 조건부: 특정 코드인 경우 수치값이 범위 내(배타)여야 함 (min < value < max)
+                        if (checkType.Equals("ifcodethenbetweenexclusive", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Parameters: CodeField;codes;NumericField;min..max
+                            var p = (rule.Parameters ?? string.Empty).Split(';');
+                            if (p.Length >= 4)
+                            {
+                                var codeField = p[0];
+                                var codes = new HashSet<string>(p[1].Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.OrdinalIgnoreCase);
+                                var numericField = p[2];
+                                var range = p[3].Split("..", StringSplitOptions.None);
+                                double? min = range.Length > 0 && double.TryParse(range[0], NumberStyles.Any, CultureInfo.InvariantCulture, out var mn) ? mn : null;
+                                double? max = range.Length > 1 && double.TryParse(range[1], NumberStyles.Any, CultureInfo.InvariantCulture, out var mx) ? mx : null;
+                                var def = f.GetDefnRef();
+                                int idxCode = def.GetFieldIndex(codeField);
+                                int idxNum = def.GetFieldIndex(numericField);
+                                if (idxCode >= 0 && idxNum >= 0)
+                                {
+                                    var code = f.GetFieldAsString(idxCode) ?? string.Empty;
+                                    if (codes.Contains(code))
+                                    {
+                                        var numStr = f.IsFieldNull(idxNum) ? string.Empty : f.GetFieldAsString(idxNum) ?? string.Empty;
+                                        if (!double.TryParse(numStr, NumberStyles.Any, CultureInfo.InvariantCulture, out var num))
+                                        {
+                                            var (x, y) = ExtractCentroid(f);
+                                            errors.Add(new ValidationError
+                                            {
+                                                ErrorCode = rule.RuleId,
+                                                Message = $"{numericField} 값 파싱 실패",
+                                                TableId = rule.TableId,
+                                                TableName = ResolveTableName(rule.TableId, rule.TableName),
+                                                FeatureId = fid,
+                                                FieldName = numericField,
+                                                Severity = DefaultSeverity,
+                                                X = x,
+                                                Y = y,
+                                                GeometryWKT = null
+                                            });
+                                        }
+                                        else
+                                        {
+                                            bool ok = true;
+                                            if (min.HasValue && !(num > min.Value)) ok = false;
+                                            if (max.HasValue && !(num < max.Value)) ok = false;
+                                            if (!ok)
+                                            {
+                                                var (x, y) = ExtractCentroid(f);
+                                                errors.Add(new ValidationError
+                                                {
+                                                    ErrorCode = rule.RuleId,
+                                                    Message = $"{codeField}가 지정코드({string.Join(',', codes)})인 경우 {numericField}는 {min}~{max} (배타) 범위여야 함. 현재='{numStr}'",
+                                                    TableId = rule.TableId,
+                                                    TableName = ResolveTableName(rule.TableId, rule.TableName),
+                                                    FeatureId = fid,
+                                                    FieldName = numericField,
+                                                    Severity = DefaultSeverity,
+                                                    X = x,
+                                                    Y = y,
+                                                    GeometryWKT = null
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
+                        // 조건부: 특정 코드인 경우 수치값이 지정값 이상이어야 함 (value >= threshold)
+                        if (checkType.Equals("ifcodethengreaterthanorequal", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Parameters: CodeField;codes;NumericField;threshold
+                            var p = (rule.Parameters ?? string.Empty).Split(';');
+                            if (p.Length >= 4)
+                            {
+                                var codeField = p[0];
+                                var codes = new HashSet<string>(p[1].Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.OrdinalIgnoreCase);
+                                var numericField = p[2];
+                                var thresholdStr = p[3];
+                                var def = f.GetDefnRef();
+                                int idxCode = GetFieldIndexIgnoreCase(def, codeField);
+                                int idxNum = GetFieldIndexIgnoreCase(def, numericField);
+                                if (idxCode >= 0 && idxNum >= 0)
+                                {
+                                    var code = f.GetFieldAsString(idxCode) ?? string.Empty;
+                                    if (codes.Contains(code))
+                                    {
+                                        var numStr = f.IsFieldNull(idxNum) ? string.Empty : f.GetFieldAsString(idxNum) ?? string.Empty;
+                                        if (!double.TryParse(numStr, NumberStyles.Any, CultureInfo.InvariantCulture, out var num) ||
+                                            !double.TryParse(thresholdStr, NumberStyles.Any, CultureInfo.InvariantCulture, out var threshold) ||
+                                            num < threshold)
+                                        {
+                                            var (x, y) = ExtractCentroid(f);
+                                            errors.Add(new ValidationError
+                                            {
+                                                ErrorCode = rule.RuleId,
+                                                Message = $"{codeField}가 지정코드({string.Join(',', codes)})인 경우 {numericField} >= {thresholdStr} 이어야 함. 현재='{numStr}'",
+                                                TableId = rule.TableId,
+                                                TableName = ResolveTableName(rule.TableId, rule.TableName),
+                                                FeatureId = fid,
+                                                FieldName = numericField,
+                                                Severity = DefaultSeverity,
+                                                X = x,
+                                                Y = y,
+                                                GeometryWKT = null
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
+                        // 수치값이 지정값과 정확히 같은지 검사
+                        if (checkType.Equals("numericequals", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Parameters: targetValue (예: "0.00")
+                            var targetValueStr = (rule.Parameters ?? string.Empty).Trim();
+                            if (double.TryParse(targetValueStr, NumberStyles.Any, CultureInfo.InvariantCulture, out var targetValue))
+                            {
+                                var def = f.GetDefnRef();
+                                int idxNum = GetFieldIndexIgnoreCase(def, rule.FieldName);
+                                if (idxNum >= 0)
+                                {
+                                    var valStr = f.IsFieldNull(idxNum) ? string.Empty : f.GetFieldAsString(idxNum) ?? string.Empty;
+                                    if (double.TryParse(valStr, NumberStyles.Any, CultureInfo.InvariantCulture, out var actualValue))
+                                    {
+                                        // 부동소수점 비교 (0.01 허용오차)
+                                        if (Math.Abs(actualValue - targetValue) < 0.01)
+                                        {
+                                            var (x, y) = ExtractCentroid(f);
+                                            errors.Add(new ValidationError
+                                            {
+                                                ErrorCode = rule.RuleId,
+                                                Message = $"{rule.FieldName}는 {targetValueStr}이 될 수 없습니다. 현재값: {valStr}",
+                                                TableId = rule.TableId,
+                                                TableName = ResolveTableName(rule.TableId, rule.TableName),
+                                                FeatureId = fid,
+                                                FieldName = rule.FieldName,
+                                                Severity = DefaultSeverity,
+                                                X = x,
+                                                Y = y,
+                                                GeometryWKT = null
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
+                        // 조건부: 특정 코드인 경우 지정된 필드는 NULL이어야 함
+                        if (checkType.Equals("ifcodethennull", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Parameters: CodeField;codes;TargetField
+                            var p = (rule.Parameters ?? string.Empty).Split(';');
+                            if (p.Length >= 3)
+                            {
+                                var codeField = p[0];
+                                var codes = new HashSet<string>(p[1].Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.OrdinalIgnoreCase);
+                                var targetField = p[2];
+                                var def = f.GetDefnRef();
+                                int idxCode = GetFieldIndexIgnoreCase(def, codeField);
+                                int idxTarget = GetFieldIndexIgnoreCase(def, targetField);
+                                
+                                _logger.LogDebug("IfCodeThenNull 검사: RuleId={RuleId}, CodeField={CodeField}, Codes={Codes}, TargetField={TargetField}, FeatureId={FeatureId}", 
+                                    rule.RuleId, codeField, string.Join("|", codes), targetField, fid);
+                                
+                                if (idxCode >= 0 && idxTarget >= 0)
+                                {
+                                    var code = f.GetFieldAsString(idxCode) ?? string.Empty;
+                                    _logger.LogDebug("코드 필드 값: {CodeField}={Code}, 조건 코드에 포함: {IsMatch}", codeField, code, codes.Contains(code));
+                                    
+                                    if (codes.Contains(code))
+                                    {
+                                        var targetValue = f.IsFieldNull(idxTarget) ? null : f.GetFieldAsString(idxTarget);
+                                        var isNotNull = !f.IsFieldNull(idxTarget) && !string.IsNullOrWhiteSpace(targetValue);
+                                        
+                                        _logger.LogDebug("대상 필드 검사: {TargetField}={Value}, IsNull={IsNull}, IsNotNull={IsNotNull}", 
+                                            targetField, targetValue, f.IsFieldNull(idxTarget), isNotNull);
+                                        
+                                        if (isNotNull)
+                                        {
+                                            _logger.LogWarning("IfCodeThenNull 오류 발견: {CodeField}={Code}인 경우 {TargetField}는 NULL이어야 함. 현재값: '{Value}'", 
+                                                codeField, code, targetField, targetValue);
+                                            
+                                            var (x, y) = ExtractCentroid(f);
+                                            errors.Add(new ValidationError
+                                            {
+                                                ErrorCode = rule.RuleId,
+                                                Message = $"{codeField}가 지정코드({string.Join(',', codes)})인 경우 {targetField}는 NULL이어야 함. 현재값: '{targetValue}'",
+                                                TableId = rule.TableId,
+                                                TableName = ResolveTableName(rule.TableId, rule.TableName),
+                                                FeatureId = fid,
+                                                FieldName = targetField,
+                                                Severity = DefaultSeverity,
+                                                ActualValue = targetValue ?? "NULL",
+                                                ExpectedValue = "NULL",
+                                                X = x,
+                                                Y = y,
+                                                GeometryWKT = null
+                                            });
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    if (idxCode < 0) _logger.LogWarning("코드 필드 '{CodeField}'를 레이어에서 찾을 수 없습니다.", codeField);
+                                    if (idxTarget < 0) _logger.LogWarning("대상 필드 '{TargetField}'를 레이어에서 찾을 수 없습니다.", targetField);
+                                }
+                            }
+                            continue;
+                        }
+
+                        // 조건부: 특정 코드인 경우 지정된 모든 필드는 NotNull 이어야 함
+                        if (checkType.Equals("ifcodethennotnullall", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Parameters: CodeField;codes;Field1|Field2|...
+                            var p = (rule.Parameters ?? string.Empty).Split(';');
+                            if (p.Length >= 3)
+                            {
+                                var codeField = p[0];
+                                var codes = new HashSet<string>(p[1].Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.OrdinalIgnoreCase);
+                                var fields = p[2].Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                                var def = f.GetDefnRef();
+                                int idxCode = def.GetFieldIndex(codeField);
+                                
+                                _logger.LogDebug("IfCodeThenNotNullAll 검사: RuleId={RuleId}, CodeField={CodeField}, Codes={Codes}, Fields={Fields}, FeatureId={FeatureId}", 
+                                    rule.RuleId, codeField, string.Join("|", codes), string.Join("|", fields), fid);
+                                
+                                if (idxCode >= 0)
+                                {
+                                    var code = f.GetFieldAsString(idxCode) ?? string.Empty;
+                                    _logger.LogDebug("코드 필드 값: {CodeField}={Code}, 조건 코드에 포함: {IsMatch}", codeField, code, codes.Contains(code));
+                                    
+                                    if (codes.Contains(code))
+                                    {
+                                        _logger.LogDebug("조건부 검사 실행: {CodeField}={Code}가 조건 코드에 해당", codeField, code);
+                                        foreach (var fld in fields)
+                                        {
+                                            int idx = GetFieldIndexIgnoreCase(def, fld);
+                                            if (idx >= 0)
+                                            {
+                                                var fieldValue = f.IsFieldNull(idx) ? null : f.GetFieldAsString(idx);
+                                                var isEmpty = string.IsNullOrEmpty(fieldValue);
+                                                var isWhitespace = !isEmpty && string.IsNullOrWhiteSpace(fieldValue);
+                                                _logger.LogDebug("필드 검사: {Field}={Value}, IsNull={IsNull}, IsEmpty={IsEmpty}, IsWhitespace={IsWhitespace}", 
+                                                    fld, fieldValue, f.IsFieldNull(idx), isEmpty, isWhitespace);
+                                                
+                                                // NULL이거나 빈 문자열이거나 공백 문자열인 경우 오류
+                                                if (idx < 0 || f.IsFieldNull(idx) || isEmpty || isWhitespace)
+                                                {
+                                                    var displayValue = fieldValue ?? "NULL";
+                                                    if (isWhitespace) displayValue = $"'{fieldValue}' (공백)";
+                                                    
+                                                    _logger.LogWarning("IfCodeThenNotNullAll 오류 발견: {CodeField}={Code}인 경우 {Field}는 필수값이어야 함. 현재값: {DisplayValue}", 
+                                                        codeField, code, fld, displayValue);
+                                                    
+                                                    var (x, y) = ExtractCentroid(f);
+                                                    errors.Add(new ValidationError
+                                                    {
+                                                        ErrorCode = rule.RuleId,
+                                                        Message = $"{codeField}가 지정코드({string.Join(',', codes)})인 경우 {fld}는 필수값이어야 함. 현재값: {displayValue}",
+                                                TableId = rule.TableId,
+                                                TableName = ResolveTableName(rule.TableId, rule.TableName),
+                                                        FeatureId = fid,
+                                                        FieldName = fld,
+                                                        Severity = DefaultSeverity,
+                                                        ActualValue = displayValue,
+                                                        ExpectedValue = "NOT NULL AND NOT BLANK",
+                                                        X = x,
+                                                        Y = y,
+                                                        GeometryWKT = null
+                                                    });
+                                                }
+                                            }
+                                            else
+                                            {
+                                                _logger.LogWarning("필드 '{Field}'를 레이어에서 찾을 수 없습니다.", fld);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
+                        if (!CheckValue(rule, value, _codelistCache))
+                        {
+                            var (x, y) = ExtractCentroid(f);
+                            errors.Add(new ValidationError
+                            {
+                                ErrorCode = rule.RuleId,
+                                Message = $"{rule.TableId}.{rule.FieldName} 값 검증 실패: '{value}' (규칙: {rule.Parameters})",
+                                                        TableId = rule.TableId,
+                                                        TableName = ResolveTableName(rule.TableId, rule.TableName),
+                                FeatureId = fid,
+                                FieldName = rule.FieldName,
+                                Severity = DefaultSeverity,
+                                X = x,
+                                Y = y,
+                                GeometryWKT = null
+                            });
+                        }
+                    }
+                }
+            }
+
+            return await Task.FromResult(errors);
+        }
+
+        /// <summary>
+        /// 단일 속성 검수 규칙을 처리합니다 (병렬 처리용)
+        /// </summary>
+        public async Task<List<ValidationError>> ValidateSingleRuleAsync(string gdbPath, IValidationDataProvider dataProvider, AttributeCheckConfig rule)
+        {
+            var errors = new List<ValidationError>();
+
+            try
+            {
+                if (!string.Equals(rule.Enabled, "Y", StringComparison.OrdinalIgnoreCase))
+                {
+                    return errors;
+                }
+
+                _logger.LogDebug("단일 속성 검수 규칙 처리: RuleId={RuleId}, TableId={TableId}, FieldName={FieldName}, CheckType={CheckType}", 
+                    rule.RuleId, rule.TableId, rule.FieldName, rule.CheckType);
+
+                // 임시 수정: dataProvider 대신 gdbPath 사용
+                using var ds = Ogr.Open(gdbPath, 0);
+                if (ds == null) return errors;
+
+                var layer = GetLayerByIdOrName(ds, rule.TableId, rule.TableName);
+                if (layer == null)
+                {
+                    _logger.LogWarning("레이어를 찾을 수 없습니다: TableId={TableId}, TableName={TableName}", rule.TableId, rule.TableName);
+                    return errors;
+                }
+
+                var layerDefn = layer.GetLayerDefn();
+                var fieldIndex = GetFieldIndexIgnoreCase(layerDefn, rule.FieldName);
+                if (fieldIndex == -1)
+                {
+                    _logger.LogWarning("필드를 찾을 수 없습니다: TableId={TableId}, FieldName={FieldName}", rule.TableId, rule.FieldName);
+                    return errors;
+                }
+
+                var checkType = rule.CheckType?.Trim() ?? string.Empty;
+                int objIndex = -1;
+                int lowestIndex = -1;
+                int baseIndex = -1;
+                int maxIndex = -1;
+                int facilityIndex = -1;
+
+                if (checkType.Equals("buld_height_base_vs_max", StringComparison.OrdinalIgnoreCase) ||
+                    checkType.Equals("buld_height_max_vs_facility", StringComparison.OrdinalIgnoreCase) ||
+                    checkType.Equals("buld_height_lowest_vs_base", StringComparison.OrdinalIgnoreCase))
+                {
+                    objIndex = GetFieldIndexIgnoreCase(layerDefn, "OBJFLTN_SE");
+                    lowestIndex = GetFieldIndexIgnoreCase(layerDefn, "BLDLWT_HGT");
+                    baseIndex = GetFieldIndexIgnoreCase(layerDefn, "BLDBSC_HGT");
+                    maxIndex = GetFieldIndexIgnoreCase(layerDefn, "BLDHGT_HGT");
+                    if (checkType.Equals("buld_height_max_vs_facility", StringComparison.OrdinalIgnoreCase))
+                    {
+                        facilityIndex = GetFieldIndexIgnoreCase(layerDefn, "BLFCHT_HGT");
+                    }
+
+                    var missingFields = new List<string>();
+                    if (objIndex < 0) missingFields.Add("OBJFLTN_SE");
+                    if (lowestIndex < 0) missingFields.Add("BLDLWT_HGT");
+                    if (baseIndex < 0) missingFields.Add("BLDBSC_HGT");
+                    if (checkType.Equals("buld_height_base_vs_max", StringComparison.OrdinalIgnoreCase) || 
+                        checkType.Equals("buld_height_max_vs_facility", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (maxIndex < 0) missingFields.Add("BLDHGT_HGT");
+                    }
+                    if (checkType.Equals("buld_height_max_vs_facility", StringComparison.OrdinalIgnoreCase) && facilityIndex < 0)
+                    {
+                        missingFields.Add("BLFCHT_HGT");
+                    }
+
+                    if (missingFields.Any())
+                    {
+                        _logger.LogWarning("건물 높이 검증에 필요한 필드를 찾을 수 없습니다: TableId={TableId}, RuleId={RuleId}, Fields={Fields}",
+                            rule.TableId,
+                            rule.RuleId,
+                            string.Join(", ", missingFields));
+                        return errors;
+                    }
+                }
+
+                layer.ResetReading();
+                Feature? feature = layer.GetNextFeature();
+                while (feature != null)
+                {
+                    var fid = feature.GetFID();
+                    var value = feature.GetFieldAsString(fieldIndex);
+
+                    if (checkType.Equals("buld_height_base_vs_max", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var error = EvaluateBuldBaseHigherThanMax(feature, rule, fid.ToString(CultureInfo.InvariantCulture), objIndex, lowestIndex, baseIndex, maxIndex);
+                        if (error != null)
+                        {
+                            errors.Add(error);
+                        }
+                        feature.Dispose();
+                        feature = layer.GetNextFeature();
+                        continue;
+                    }
+
+                    if (checkType.Equals("buld_height_max_vs_facility", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var error = EvaluateBuldMaxHigherThanFacility(feature, rule, fid.ToString(CultureInfo.InvariantCulture), objIndex, lowestIndex, baseIndex, maxIndex, facilityIndex);
+                        if (error != null)
+                        {
+                            errors.Add(error);
+                        }
+                        feature.Dispose();
+                        feature = layer.GetNextFeature();
+                        continue;
+                    }
+
+                    if (checkType.Equals("buld_height_lowest_vs_base", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var error = EvaluateBuldLowestHigherThanBase(feature, rule, fid.ToString(CultureInfo.InvariantCulture), objIndex, lowestIndex, baseIndex);
+                        if (error != null)
+                        {
+                            errors.Add(error);
+                        }
+                        feature.Dispose();
+                        feature = layer.GetNextFeature();
+                        continue;
+                    }
+
+                    if (!CheckValue(rule, value, _codelistCache))
+                    {
+                        var (x, y) = ExtractCentroid(feature);
+                        errors.Add(new ValidationError
+                        {
+                            ErrorCode = rule.RuleId,
+                            Message = $"{rule.TableId}.{rule.FieldName} 값 검증 실패: '{value}' (규칙: {rule.Parameters})",
+                                TableId = rule.TableId,
+                                TableName = ResolveTableName(rule.TableId, rule.TableName),
+                            FeatureId = fid.ToString(),
+                            FieldName = rule.FieldName,
+                            Severity = DefaultSeverity,
+                            X = x,
+                            Y = y,
+                            GeometryWKT = null
+                        });
+                    }
+
+                    feature.Dispose();
+                    feature = layer.GetNextFeature();
+                }
+
+                _logger.LogDebug("단일 속성 검수 규칙 완료: RuleId={RuleId}, ErrorCount={ErrorCount}", rule.RuleId, errors.Count);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "단일 속성 검수 규칙 처리 중 오류: RuleId={RuleId}", rule.RuleId);
+            }
+
+            return await Task.FromResult(errors);
+        }
+
+        /// <summary>
+        /// 테이블ID 또는 테이블명으로 레이어를 찾습니다(대소문자 무시). 실패 시 null 반환
+        /// </summary>
+        private static Layer? GetLayerByIdOrName(DataSource ds, string? tableId, string? tableName)
+        {
+            string id = tableId?.Trim() ?? string.Empty;
+            string name = tableName?.Trim() ?? string.Empty;
+
+            // 1) 정확 일치 시도 (대소문자 그대로)
+            if (!string.IsNullOrEmpty(id))
+            {
+                var l = ds.GetLayerByName(id);
+                if (l != null) return l;
+            }
+            if (!string.IsNullOrEmpty(name))
+            {
+                var l = ds.GetLayerByName(name);
+                if (l != null) return l;
+            }
+
+            // 2) 대소문자 무시 매칭 (전체 스캔)
+            var targetSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrEmpty(id)) targetSet.Add(id);
+            if (!string.IsNullOrEmpty(name)) targetSet.Add(name);
+
+            for (int i = 0; i < ds.GetLayerCount(); i++)
+            {
+                var lyr = ds.GetLayerByIndex(i);
+                if (lyr == null) continue;
+                var lname = lyr.GetName() ?? string.Empty;
+                if (targetSet.Contains(lname)) return lyr;
+            }
+
+            // 3) 일부 환경에서 스키마 접두사 등으로 이름이 바뀌는 경우 대비: 끝/시작 포함 비교
+            for (int i = 0; i < ds.GetLayerCount(); i++)
+            {
+                var lyr = ds.GetLayerByIndex(i);
+                if (lyr == null) continue;
+                var lname = lyr.GetName() ?? string.Empty;
+                if (!string.IsNullOrEmpty(id) && lname.EndsWith(id, StringComparison.OrdinalIgnoreCase)) return lyr;
+                if (!string.IsNullOrEmpty(name) && lname.EndsWith(name, StringComparison.OrdinalIgnoreCase)) return lyr;
+            }
+
+            return null;
+        }
+
+        private ValidationError? EvaluateBuldBaseHigherThanMax(
+            Feature feature,
+            AttributeCheckConfig rule,
+            string featureId,
+            int objIndex,
+            int lowestIndex,
+            int baseIndex,
+            int maxIndex)
+        {
+            var objCode = GetTrimmedString(feature, objIndex);
+            if (IsExcludedObjectChange(objCode))
+            {
+                return null;
+            }
+
+            var lowest = ToNullableDouble(feature, lowestIndex);
+            var baseHeight = ToNullableDouble(feature, baseIndex);
+            var maxHeight = ToNullableDouble(feature, maxIndex);
+
+            if (HasNullOrZero(lowest, baseHeight, maxHeight))
+            {
+                return null;
+            }
+
+            if (lowest!.Value >= baseHeight!.Value)
+            {
+                return null;
+            }
+
+            if (!(maxHeight <= baseHeight && (maxHeight!.Value - baseHeight.Value) <= -2.0))
+            {
+                return null;
+            }
+
+            var denom = maxHeight.Value - lowest.Value;
+            var (x, y) = ExtractCentroid(feature);
+            var metadata = CreateHeightMetadata(lowest.Value, baseHeight.Value, maxHeight.Value, null);
+
+            if (IsApproximatelyZero(denom))
+            {
+                metadata["Issue"] = "DenominatorZero";
+                return CreateHeightValidationError(
+                    rule,
+                    featureId,
+                    x,
+                    y,
+                    $"최고높이({maxHeight.Value:F2}m)와 최저높이({lowest.Value:F2}m)의 차이가 0이어서 검증 기준을 적용할 수 없습니다. (기본높이 {baseHeight.Value:F2}m)",
+                    metadata);
+            }
+
+            var ratio = ((baseHeight.Value - lowest.Value) / denom) * 100.0 - 100.0;
+            metadata["DeviationPercent"] = ratio;
+
+            if (Math.Abs(ratio) < 20.0)
+            {
+                return null;
+            }
+
+            return CreateHeightValidationError(
+                rule,
+                featureId,
+                x,
+                y,
+                $"기본높이({baseHeight.Value:F2}m)가 최고높이({maxHeight.Value:F2}m)보다 높습니다. 편차 {ratio:F2}% (최저높이 {lowest.Value:F2}m).",
+                metadata);
+        }
+
+        private ValidationError? EvaluateBuldMaxHigherThanFacility(
+            Feature feature,
+            AttributeCheckConfig rule,
+            string featureId,
+            int objIndex,
+            int lowestIndex,
+            int baseIndex,
+            int maxIndex,
+            int facilityIndex)
+        {
+            var objCode = GetTrimmedString(feature, objIndex);
+            if (IsExcludedObjectChange(objCode))
+            {
+                return null;
+            }
+
+            var lowest = ToNullableDouble(feature, lowestIndex);
+            var baseHeight = ToNullableDouble(feature, baseIndex);
+            var maxHeight = ToNullableDouble(feature, maxIndex);
+            var facilityHeight = ToNullableDouble(feature, facilityIndex);
+
+            if (HasNullOrZero(lowest, baseHeight, maxHeight, facilityHeight))
+            {
+                return null;
+            }
+
+            if (lowest!.Value >= baseHeight!.Value)
+            {
+                return null;
+            }
+
+            if (maxHeight <= baseHeight && (maxHeight!.Value - baseHeight.Value) <= -2.0)
+            {
+                var diff = maxHeight.Value - lowest.Value;
+                if (IsApproximatelyZero(diff) || Math.Abs(((baseHeight.Value - lowest.Value) / diff) * 100.0 - 100.0) >= 20.0)
+                {
+                    return null;
+                }
+            }
+
+            if (!(facilityHeight <= maxHeight && (facilityHeight!.Value - maxHeight.Value) <= -2.0))
+            {
+                return null;
+            }
+
+            var denom = facilityHeight.Value - lowest.Value;
+            var (x, y) = ExtractCentroid(feature);
+            var metadata = CreateHeightMetadata(lowest.Value, baseHeight.Value, maxHeight.Value, facilityHeight.Value);
+
+            if (IsApproximatelyZero(denom))
+            {
+                metadata["Issue"] = "DenominatorZero";
+                return CreateHeightValidationError(
+                    rule,
+                    featureId,
+                    x,
+                    y,
+                    $"시설물높이({facilityHeight.Value:F2}m)와 최저높이({lowest.Value:F2}m)의 차이가 0이어서 검증 기준을 적용할 수 없습니다. (최고높이 {maxHeight.Value:F2}m)",
+                    metadata);
+            }
+
+            var ratio = ((maxHeight.Value - lowest.Value) / denom) * 100.0 - 100.0;
+            metadata["DeviationPercent"] = ratio;
+
+            if (Math.Abs(ratio) < 20.0)
+            {
+                return null;
+            }
+
+            return CreateHeightValidationError(
+                rule,
+                featureId,
+                x,
+                y,
+                $"최고높이({maxHeight.Value:F2}m)가 시설물높이({facilityHeight.Value:F2}m)보다 높습니다. 편차 {ratio:F2}% (최저높이 {lowest.Value:F2}m).",
+                metadata);
+        }
+
+        /// <summary>
+        /// 신규건물 중 최저높이가 기본높이보다 큰 경우 검사
+        /// </summary>
+        private ValidationError? EvaluateBuldLowestHigherThanBase(
+            Feature feature,
+            AttributeCheckConfig rule,
+            string featureId,
+            int objIndex,
+            int lowestIndex,
+            int baseIndex)
+        {
+            var objCode = GetTrimmedString(feature, objIndex);
+            
+            // 신규건물(OBF001)만 검사
+            if (!objCode.Equals("OBF001", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            var lowest = ToNullableDouble(feature, lowestIndex);
+            var baseHeight = ToNullableDouble(feature, baseIndex);
+
+            // NULL이거나 0이면 스킵
+            if (!lowest.HasValue || lowest.Value <= 0 || !baseHeight.HasValue || baseHeight.Value <= 0)
+            {
+                return null;
+            }
+
+            // 최저높이가 기본높이보다 크면 오류
+            if (lowest.Value > baseHeight.Value)
+            {
+                var (x, y) = ExtractCentroid(feature);
+                var metadata = new Dictionary<string, object>
+                {
+                    ["LowestHeight"] = lowest.Value,
+                    ["BaseHeight"] = baseHeight.Value,
+                    ["Difference"] = lowest.Value - baseHeight.Value
+                };
+
+                return CreateHeightValidationError(
+                    rule,
+                    featureId,
+                    x,
+                    y,
+                    $"신규건물의 최저높이({lowest.Value:F2}m)가 기본높이({baseHeight.Value:F2}m)보다 큽니다. 차이: {lowest.Value - baseHeight.Value:F2}m",
+                    metadata);
+            }
+
+            return null;
+        }
+
+        private ValidationError CreateHeightValidationError(
+            AttributeCheckConfig rule,
+            string featureId,
+            double x,
+            double y,
+            string message,
+            Dictionary<string, object> metadata)
+        {
+            return new ValidationError
+            {
+                ErrorCode = rule.RuleId ?? rule.CheckType ?? string.Empty,
+                Message = message,
+                TableId = rule.TableId,
+                TableName = ResolveTableName(rule.TableId, rule.TableName),
+                FeatureId = featureId,
+                FieldName = rule.FieldName,
+                Severity = DefaultSeverity,
+                X = x,
+                Y = y,
+                GeometryWKT = null,
+                Metadata = metadata
+            };
+        }
+
+        private static Dictionary<string, object> CreateHeightMetadata(
+            double lowest,
+            double baseHeight,
+            double maxHeight,
+            double? facilityHeight)
+        {
+            var metadata = new Dictionary<string, object>
+            {
+                ["LowestHeight"] = lowest,
+                ["BaseHeight"] = baseHeight,
+                ["MaxHeight"] = maxHeight
+            };
+
+            if (facilityHeight.HasValue)
+            {
+                metadata["FacilityHeight"] = facilityHeight.Value;
+            }
+
+            return metadata;
+        }
+
+        private static bool IsExcludedObjectChange(string? code) =>
+            string.Equals(code, "OFJ008", StringComparison.OrdinalIgnoreCase);
+
+        private static string ResolveTableName(string tableId, string? tableName) =>
+            string.IsNullOrWhiteSpace(tableName) ? tableId : tableName;
+
+        private static string GetTrimmedString(Feature feature, int index)
+        {
+            if (index < 0 || feature.IsFieldNull(index))
+            {
+                return string.Empty;
+            }
+
+            return (feature.GetFieldAsString(index) ?? string.Empty).Trim();
+        }
+
+        private static double? ToNullableDouble(Feature feature, int index)
+        {
+            if (index < 0 || feature.IsFieldNull(index))
+            {
+                return null;
+            }
+
+            var raw = feature.GetFieldAsString(index);
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return null;
+            }
+
+            if (double.TryParse(raw, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out var value))
+            {
+                return value;
+            }
+
+            return null;
+        }
+
+        private static bool HasNullOrZero(params double?[] values) =>
+            values.Any(v => !v.HasValue || IsApproximatelyZero(v.Value));
+
+        private static bool IsApproximatelyZero(double value) => Math.Abs(value) < 1e-6;
+
+        private static bool CheckValue(AttributeCheckConfig rule, string? value, Dictionary<string, HashSet<string>>? codelistCache)
+        {
+            var type = rule.CheckType?.Trim();
+            var param = rule.Parameters ?? string.Empty;
+            switch (type?.ToLowerInvariant())
+            {
+                case "codelist":
+                    {
+                        // Parameters가 코드셋ID인 경우 codelist.csv에서 참조
+                        if (codelistCache != null && codelistCache.ContainsKey(param))
+                        {
+                            return codelistCache[param].Contains(value ?? string.Empty);
+                        }
+                        // 기존 방식: 파이프로 구분된 코드 목록
+                        var codes = param.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        return codes.Contains(value);
+                    }
+                case "range":
+                    {
+                        // 형식: min..max (비워두면 개방)
+                        var parts = param.Split("..", StringSplitOptions.None);
+                        if (!double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var v)) return false;
+                        double? min = parts.Length > 0 && double.TryParse(parts[0], NumberStyles.Any, CultureInfo.InvariantCulture, out var mn) ? mn : null;
+                        double? max = parts.Length > 1 && double.TryParse(parts[1], NumberStyles.Any, CultureInfo.InvariantCulture, out var mx) ? mx : null;
+                        if (min.HasValue && v < min.Value) return false;
+                        if (max.HasValue && v > max.Value) return false;
+                        return true;
+                    }
+                case "regex":
+                    {
+                        try
+                        {
+                            // NULL/빈값은 검사 비대상으로 통과
+                            if (string.IsNullOrWhiteSpace(value)) return true;
+                            return System.Text.RegularExpressions.Regex.IsMatch(value, param);
+                        }
+                        catch { return false; }
+                    }
+                case "regexnot":
+                    {
+                        // NULL/빈값은 오류로 보지 않음(통과)
+                        if (string.IsNullOrWhiteSpace(value)) return true;
+                        try
+                        {
+                            return !System.Text.RegularExpressions.Regex.IsMatch(value, param);
+                        }
+                        catch { return true; }
+                    }
+                case "notnull":
+                    return !string.IsNullOrWhiteSpace(value);
+                case "notjamoonly":
+                    {
+                        var s = (value ?? string.Empty).Trim();
+                        // NULL/빈값은 이 규칙 대상 아님(통과)
+                        if (string.IsNullOrEmpty(s)) return true;
+                        // 자음/모음이 포함된 경우 false (오류) - 혼합된 경우도 포함
+                        return !System.Text.RegularExpressions.Regex.IsMatch(s, ".*[ㄱ-ㅎㅏ-ㅣ].*");
+                    }
+                case "koreantypo":
+                    {
+                        var s = (value ?? string.Empty).Trim();
+                        if (string.IsNullOrEmpty(s)) return true;
+                        // 한글 자모 또는 물음표가 포함되면 오류로 판단
+                        var hasJamo = System.Text.RegularExpressions.Regex.IsMatch(s, "[ㄱ-ㅎㅏ-ㅣ]");
+                        var hasQuestion = s.Contains('?') || s.Contains('？');
+                        return !(hasJamo || hasQuestion);
+                    }
+                case "notzero":
+                    {
+                        if (!double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var v)) return false;
+                        return Math.Abs(v) > 1e-12;
+                    }
+                case "multipleof":
+                    {
+                        // Parameters: baseValue (예: 5)
+                        if (!double.TryParse(param, NumberStyles.Any, CultureInfo.InvariantCulture, out var b)) return false;
+                        if (!double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var v)) return false;
+                        var q = Math.Round(v / b);
+                        return Math.Abs(v - q * b) < 1e-9;
+                    }
+                default:
+                    return true; // 알 수 없는 규칙은 통과
+            }
+        }
+
+        private static bool IsMultiple(string value, double baseVal)
+        {
+            if (!double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var v)) return false;
+            var q = Math.Round(v / baseVal);
+            return Math.Abs(v - q * baseVal) < 1e-9;
+        }
+
+        /// <summary>
+        /// 단일 레이어에 대해 속성 검수 규칙을 적용합니다 (와일드카드 지원용)
+        /// </summary>
+        private async Task<List<ValidationError>> ProcessSingleLayerRuleAsync(
+            string gdbPath,
+            Layer layer,
+            AttributeCheckConfig rule,
+            CancellationToken token)
+        {
+            var errors = new List<ValidationError>();
+
+            try
+            {
+                var layerName = layer.GetName();
+                var defn = layer.GetLayerDefn();
+
+                // 필드 존재 여부 확인
+                int fieldIndex = GetFieldIndexIgnoreCase(defn, rule.FieldName);
+                // 객체변동구분(objfltn_se) 필드 인덱스 확인 (삭제된 객체 제외용)
+                int objFltnIndex = GetFieldIndexIgnoreCase(defn, "objfltn_se");
+
+                if (fieldIndex == -1)
+                {
+                    // 필드가 없으면 스킵 (와일드카드이므로 정상)
+                    _logger.LogDebug("와일드카드 규칙: 레이어 {LayerName}에 필드 {FieldName} 없음, 스킵", layerName, rule.FieldName);
+                    return errors;
+                }
+
+                var checkType = rule.CheckType?.Trim() ?? string.Empty;
+
+                // 간단한 검수 타입만 지원 (복잡한 조건부 검수는 명시적 테이블 지정 필요)
+                layer.ResetReading();
+                Feature? f;
+                int processedCount = 0;
+                
+                while ((f = layer.GetNextFeature()) != null)
+                {
+                    using (f)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        processedCount++;
+                        
+                        // 삭제된 객체(OFJ008)는 검수 제외
+                        if (objFltnIndex != -1)
+                        {
+                            var objFltnValue = f.IsFieldNull(objFltnIndex) ? null : f.GetFieldAsString(objFltnIndex);
+                            if (IsExcludedObjectChange(objFltnValue))
+                            {
+                                LastSkippedFeatureCount++;
+                                continue;
+                            }
+                        }
+                        
+                        var fid = f.GetFID().ToString(CultureInfo.InvariantCulture);
+                        string? value = f.IsFieldNull(fieldIndex) ? null : f.GetFieldAsString(fieldIndex);
+
+                        // CheckValue를 사용한 간단한 검증
+                        bool isValid = CheckValue(rule, value, _codelistCache);
+                        
+                        if (!isValid)
+                        {
+                            var (x, y) = ExtractCentroid(f);
+                            errors.Add(new ValidationError
+                            {
+                                ErrorCode = rule.RuleId ?? "ATTR_CHECK",
+                                Message = $"{rule.FieldName} 값이 규칙을 위반했습니다: '{value}'",
+                                TableId = layerName ?? string.Empty,
+                                TableName = string.Empty, // UI에서 TableId→별칭 매핑 사용
+                                FeatureId = fid,
+                                FieldName = rule.FieldName,
+                                ActualValue = value,
+                                Severity = DefaultSeverity,
+                                X = x,
+                                Y = y,
+                                GeometryWKT = null
+                            });
+                        }
+                    }
+                }
+
+                if (errors.Count > 0)
+                {
+                    _logger.LogDebug("와일드카드 규칙: 레이어 {LayerName}에서 {ErrorCount}개 오류 검출 (처리 피처: {ProcessedCount}개)",
+                        layerName, errors.Count, processedCount);
+                }
+
+                return errors;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "와일드카드 규칙 처리 중 오류: LayerName={LayerName}, RuleId={RuleId}",
+                    layer.GetName(), rule.RuleId);
+                return errors;
+            }
+        }
+    }
+}
+
+
+

@@ -1,0 +1,55 @@
+version: 2
+updates:
+  # NuGet 패키지 업데이트
+  - package-ecosystem: "nuget"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Seoul"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "wgsystem/developers"
+    labels:
+      - "dependencies"
+      - "nuget"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      # Microsoft 패키지 그룹화
+      microsoft-packages:
+        patterns:
+          - "Microsoft.*"
+      # Entity Framework Core 패키지 그룹화
+      ef-core-packages:
+        patterns:
+          - "Microsoft.EntityFrameworkCore*"
+      # GDAL 패키지 그룹화
+      gdal-packages:
+        patterns:
+          - "MaxRev.Gdal*"
+      # NetTopologySuite 패키지 그룹화
+      nts-packages:
+        patterns:
+          - "NetTopologySuite*"
+    ignore:
+      # 특정 버전 무시 (예: 메이저 버전 업데이트)
+      - dependency-name: "Microsoft.Extensions.*"
+        update-types: ["version-update:semver-major"]
+
+  # GitHub Actions 워크플로우 업데이트
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Seoul"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(ci)"

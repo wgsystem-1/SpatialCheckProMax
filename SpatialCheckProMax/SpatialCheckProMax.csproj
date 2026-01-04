@@ -1,0 +1,77 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <Nullable>disable</Nullable>
+    <NoWarn>CS8632;CS1998</NoWarn>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- 소스 파일 인코딩: UTF-8 (BOM 없음) -->
+    <Charset>UTF-8</Charset>
+    <!-- 라이브러리로 변경: WPF 관련 설정 제거 -->
+    <!-- 지침서 준수: 빌드 경고 완전 제거 -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningsAsErrors />
+    <WarningsNotAsErrors />
+    
+    <!-- 어셈블리 메타데이터 생성 비활성화 (직접 AssemblyInfo.cs 사용) -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    
+    <!-- 어셈블리 메타데이터 -->
+    <AssemblyTitle>Spatial Check Pro Max Core Library</AssemblyTitle>
+    <AssemblyDescription>File Geodatabase 검수 전문 라이브러리</AssemblyDescription>
+    <AssemblyCompany>(주)우리강산시스템</AssemblyCompany>
+    <AssemblyProduct>Spatial Check Pro Max</AssemblyProduct>
+    <AssemblyCopyright>Copyright © WGSYSTEM 2025</AssemblyCopyright>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyInformationalVersion>1.0.0</AssemblyInformationalVersion>
+    
+    <!-- NuGet 패키지 메타데이터 -->
+    <PackageId>SpatialCheckProMax</PackageId>
+    <PackageVersion>1.0.0</PackageVersion>
+    <Title>Spatial Check Pro Max</Title>
+    <Authors>(주)우리강산시스템템)</Authors>
+    <Description>File Geodatabase 검수 전문 라이브러리</Description>
+    <PackageTags>gis;geodatabase;validation;spatial;gdal;netstandard</PackageTags>
+    <PackageProjectUrl>https://github.com/your-org/spatial-check-pro-max</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/your-org/spatial-check-pro-max</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageReleaseNotes>
+      v1.0.0: 초기 릴리스
+      - File Geodatabase 5단계 검수 시스템
+      - GDAL 기반 공간데이터 분석
+      - QC_ERRORS 시스템 지원
+      - 확장 가능한 아키텍처
+    </PackageReleaseNotes>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 핵심 비즈니스 로직 패키지 -->
+    <PackageReference Include="CsvHelper" Version="33.1.0" />
+    <PackageReference Include="MaxRev.Gdal.Core" Version="3.10.0.306" />
+    <PackageReference Include="MaxRev.Gdal.WindowsRuntime.Minimal" Version="3.10.0.306" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite.NetTopologySuite" Version="9.0.10" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="9.0.4" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.10" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.23.2" />
+    <PackageReference Include="NetTopologySuite" Version="2.6.0" />
+    <PackageReference Include="Serilog" Version="4.3.0" />
+    <PackageReference Include="Serilog.Extensions.Logging" Version="9.0.0" />
+    <PackageReference Include="iTextSharp.LGPLv2.Core" Version="3.7.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Config\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
+

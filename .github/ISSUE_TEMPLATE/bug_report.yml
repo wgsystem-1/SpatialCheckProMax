@@ -1,0 +1,140 @@
+name: 버그 리포트
+description: 버그나 문제를 신고합니다
+title: "[BUG] "
+labels: ["bug", "triage"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 버그 리포트
+        버그를 발견하셨나요? 자세한 정보를 제공해주시면 빠르게 해결할 수 있습니다.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 버그 설명
+      description: 버그에 대한 명확하고 간단한 설명을 작성해주세요
+      placeholder: 어떤 문제가 발생했나요?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 재현 방법
+      description: 버그를 재현할 수 있는 단계를 작성해주세요
+      placeholder: |
+        1. '...'로 이동
+        2. '...'를 클릭
+        3. '...'까지 스크롤
+        4. 오류 확인
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 예상 동작
+      description: 어떤 동작이 예상되었나요?
+      placeholder: 무엇이 일어나야 했나요?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 실제 동작
+      description: 실제로 무엇이 일어났나요?
+      placeholder: 무엇이 일어났나요?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 영향받는 컴포넌트
+      description: 어떤 컴포넌트에서 문제가 발생했나요?
+      options:
+        - GUI 애플리케이션
+        - API 서버
+        - 핵심 라이브러리 (SpatialCheckProMax)
+        - Table Check (테이블 검사)
+        - Schema Check (스키마 검사)
+        - Geometry Check (지오메트리 검사)
+        - Attribute Check (속성 검사)
+        - Relation Check (관계 검사)
+        - Report Generation (보고서 생성)
+        - 기타
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: 심각도
+      description: 이 버그의 심각도를 선택해주세요
+      options:
+        - Critical - 애플리케이션이 동작하지 않음
+        - High - 주요 기능이 동작하지 않음
+        - Medium - 일부 기능에 문제가 있음
+        - Low - 사소한 문제
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 운영 체제
+      description: 어떤 OS에서 문제가 발생했나요?
+      placeholder: 예) Windows 11 64비트
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 애플리케이션 버전
+      description: 어떤 버전을 사용하고 계신가요?
+      placeholder: 예) v1.0.0
+    validations:
+      required: true
+
+  - type: input
+    id: dotnet-version
+    attributes:
+      label: .NET 버전
+      description: .NET 런타임 버전은 무엇인가요?
+      placeholder: 예) .NET 9.0.1
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 로그 및 오류 메시지
+      description: 관련 로그나 오류 메시지가 있다면 붙여넣어주세요
+      placeholder: |
+        로그 파일 내용이나 오류 메시지를 여기에 붙여넣으세요
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: 스크린샷
+      description: 문제를 보여주는 스크린샷이 있다면 첨부해주세요
+      placeholder: 이미지를 드래그 앤 드롭하거나 붙여넣으세요
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 추가 정보
+      description: 이 문제와 관련된 추가 정보가 있나요?
+      placeholder: 다른 관련 정보를 작성해주세요
+    validations:
+      required: false

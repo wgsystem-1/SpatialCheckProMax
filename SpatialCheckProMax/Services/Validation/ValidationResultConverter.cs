@@ -1,0 +1,796 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using OSGeo.OGR;
+using SpatialCheckProMax.Models;
+using SpatialCheckProMax.Models.Enums;
+
+namespace SpatialCheckProMax.Services
+{
+    /// <summary>
+    /// 기존 검수 결과를 QC_Errors 형태로 변환하는 서비스
+    /// </summary>
+    public class ValidationResultConverter
+    {
+        /// <summary>
+        /// 검수 결과에서 오류를 지오메트리/비지오메트리로 분류합니다
+        /// </summary>
+        public ErrorClassificationSummary ClassifyErrors(ValidationResult validationResult)
+        {
+            var summary = new ErrorClassificationSummary();
+
+            // 0단계
+            if (validationResult.FileGdbCheckResult != null)
+            {
+                AccumulateNonGeometry(summary, "FILEGDB", validationResult.FileGdbCheckResult.ErrorCount);
+            }
+
+            // 1단계
+            if (validationResult.TableCheckResult != null)
+            {
+                var t = validationResult.TableCheckResult;
+                AccumulateNonGeometry(summary, "TABLE_MISSING", t.TableResults?.Count(x => string.Equals(x.TableExistsCheck, "N", StringComparison.OrdinalIgnoreCase)) ?? 0);
+                AccumulateNonGeometry(summary, "TABLE_ZERO_FEATURES", t.TableResults?.Count(x => string.Equals(x.TableExistsCheck, "Y", StringComparison.OrdinalIgnoreCase) && (x.FeatureCount ?? 0) == 0) ?? 0);
+            }
+
+            // 2단계
+            if (validationResult.SchemaCheckResult != null)
+            {
+                AccumulateNonGeometry(summary, "SCHEMA", validationResult.SchemaCheckResult.ErrorCount);
+            }
+
+            // 3단계 (지오메트리)
+            if (validationResult.GeometryCheckResult?.GeometryResults != null)
+            {
+                foreach (var r in validationResult.GeometryCheckResult.GeometryResults)
+                {
+                    AccumulateGeometry(summary, "LOG_TOP_GEO_001", r.DuplicateCount);
+                    AccumulateGeometry(summary, "LOG_TOP_GEO_002", r.OverlapCount);
+                    AccumulateGeometry(summary, "LOG_TOP_GEO_003", r.SelfIntersectionCount);
+                    AccumulateGeometry(summary, "LOG_TOP_GEO_010", r.SelfOverlapCount);
+                    AccumulateGeometry(summary, "LOG_TOP_GEO_004", r.SliverCount);
+                    AccumulateGeometry(summary, "LOG_TOP_GEO_009", r.SpikeCount);
+                    AccumulateGeometry(summary, "LOG_TOP_GEO_005", r.ShortObjectCount);
+                    AccumulateGeometry(summary, "LOG_TOP_GEO_006", r.SmallAreaCount);
+                    AccumulateGeometry(summary, "LOG_TOP_GEO_007", r.PolygonInPolygonCount);
+                    AccumulateGeometry(summary, "LOG_TOP_GEO_008", r.MinPointCount);
+                    AccumulateGeometry(summary, "LOG_TOP_GEO_011", r.UndershootCount);
+                    AccumulateGeometry(summary, "LOG_TOP_GEO_012", r.OvershootCount);
+                }
+            }
+
+            // 4단계 (관계 – 공간관계지만 결과 표현은 비지오메트리 카테고리로 분리 유지)
+            if (validationResult.RelationCheckResult != null)
+            {
+                AccumulateNonGeometry(summary, "REL", validationResult.RelationCheckResult.ErrorCount);
+            }
+
+            // 5단계 (속성관계)
+            if (validationResult.AttributeRelationCheckResult != null)
+            {
+                AccumulateNonGeometry(summary, "ATTR_REL", validationResult.AttributeRelationCheckResult.ErrorCount);
+            }
+
+            return summary;
+        }
+
+        private static void AccumulateGeometry(ErrorClassificationSummary s, string code, int count)
+        {
+            if (count <= 0) return;
+            s.GeometryErrorCount += count;
+            if (!s.GeometryByType.ContainsKey(code)) s.GeometryByType[code] = 0;
+            s.GeometryByType[code] += count;
+        }
+
+        private static void AccumulateNonGeometry(ErrorClassificationSummary s, string code, int count)
+        {
+            if (count <= 0) return;
+            s.NonGeometryErrorCount += count;
+            if (!s.NonGeometryByType.ContainsKey(code)) s.NonGeometryByType[code] = 0;
+            s.NonGeometryByType[code] += count;
+        }
+        private readonly ILogger<ValidationResultConverter> _logger;
+
+        public ValidationResultConverter(ILogger<ValidationResultConverter> logger)
+        {
+            _logger = logger;
+        }
+
+        /// <summary>
+        /// ValidationResult를 QcError 목록으로 변환합니다
+        /// </summary>
+        /// <param name="validationResult">검수 결과</param>
+        /// <param name="runId">실행 ID</param>
+        /// <returns>QcError 목록</returns>
+        public List<QcError> ConvertValidationResultToQcErrors(ValidationResult validationResult, Guid runId)
+        {
+            var qcErrors = new List<QcError>();
+
+            try
+            {
+                _logger.LogInformation("ValidationResult를 QcError로 변환 시작: {ValidationId}", validationResult.ValidationId);
+
+                // 1단계: 테이블 검수 결과 변환
+                if (validationResult.TableCheckResult?.TableResults != null)
+                {
+                    foreach (var tableResult in validationResult.TableCheckResult.TableResults)
+                    {
+                        qcErrors.AddRange(ConvertTableValidationItem(tableResult, runId));
+                    }
+                }
+
+                // 2단계: 스키마 검수 결과 변환
+                // SchemaResults (구조적 검증)와 Errors (실제 오류) 모두 변환
+                if (validationResult.SchemaCheckResult != null)
+                {
+                    // SchemaValidationItem 순회 (레거시 지원)
+                    if (validationResult.SchemaCheckResult.SchemaResults != null)
+                    {
+                        foreach (var schemaResult in validationResult.SchemaCheckResult.SchemaResults)
+                        {
+                            qcErrors.AddRange(ConvertSchemaValidationItem(schemaResult, runId));
+                        }
+                    }
+
+                    // CheckResult.Errors 변환 (최신 구조)
+                    if (validationResult.SchemaCheckResult.Errors != null && validationResult.SchemaCheckResult.Errors.Count > 0)
+                    {
+                        qcErrors.AddRange(ToQcErrorsFromCheckResult(validationResult.SchemaCheckResult, "SCHEMA", runId.ToString()));
+                    }
+                }
+
+                // 3단계: 지오메트리 검수 결과 변환
+                if (validationResult.GeometryCheckResult?.GeometryResults != null)
+                {
+                    foreach (var geometryResult in validationResult.GeometryCheckResult.GeometryResults)
+                    {
+                        qcErrors.AddRange(ConvertGeometryValidationItem(geometryResult, runId));
+                    }
+                }
+
+                // 4단계: 공간관계 검수 결과 변환
+                if (validationResult.RelationCheckResult != null && validationResult.RelationCheckResult.Errors != null && validationResult.RelationCheckResult.Errors.Count > 0)
+                {
+                    _logger.LogDebug("4단계 공간관계 오류 변환 시작: {Count}개", validationResult.RelationCheckResult.Errors.Count);
+                    qcErrors.AddRange(ToQcErrorsFromCheckResult(validationResult.RelationCheckResult, "REL", runId.ToString()));
+                }
+
+                // 5단계: 속성관계 검수 결과 변환
+                if (validationResult.AttributeRelationCheckResult != null && validationResult.AttributeRelationCheckResult.Errors != null && validationResult.AttributeRelationCheckResult.Errors.Count > 0)
+                {
+                    _logger.LogDebug("5단계 속성관계 오류 변환 시작: {Count}개", validationResult.AttributeRelationCheckResult.Errors.Count);
+                    qcErrors.AddRange(ToQcErrorsFromCheckResult(validationResult.AttributeRelationCheckResult, "ATTR_REL", runId.ToString()));
+                }
+
+                _logger.LogInformation("ValidationResult 변환 완료: {Count}개 QcError 생성 (1-5단계 전체)", qcErrors.Count);
+                return qcErrors;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ValidationResult 변환 중 오류 발생");
+                return qcErrors;
+            }
+        }
+
+        /// <summary>
+        /// 테이블 검수 결과를 QcError로 변환
+        /// </summary>
+        private List<QcError> ConvertTableValidationItem(TableValidationItem tableResult, Guid runId)
+        {
+            var qcErrors = new List<QcError>();
+
+            // 테이블 검수에서 오류가 있는 경우만 QcError 생성
+            if (!tableResult.IsValid)
+            {
+                var tableRuleId = "COM_OMS_TBL_001";
+                var qcError = new QcError
+                {
+                    GlobalID = Guid.NewGuid().ToString(),
+                    ErrType = QcErrorType.SCHEMA.ToString(),
+                    ErrCode = ResolveErrCode(tableRuleId, "TBL", tableResult.TableId ?? "Unknown"),
+                    Severity = string.Empty,
+                    Status = string.Empty,
+                    RuleId = tableRuleId, // 필수 테이블 누락 표준 ID
+                    TableId = tableResult.TableId ?? string.Empty,
+                    TableName = tableResult.TableName ?? tableResult.TableId ?? "Unknown",
+                    SourceClass = tableResult.TableName ?? "Unknown",
+                    SourceOID = 0, // 테이블 검수는 특정 객체 없음
+                    SourceGlobalID = null,
+                    Message = $"테이블 검수 실패: {tableResult.TableName}",
+                    DetailsJSON = JsonSerializer.Serialize(new
+                    {
+                        CheckType = "테이블 검수",
+                        TableId = tableResult.TableId,
+                        TableName = tableResult.TableName,
+                        ExpectedFeatureType = tableResult.FeatureType,
+                        ActualFeatureType = tableResult.ActualFeatureType,
+                        FeatureCount = tableResult.FeatureCount,
+                        IsValid = tableResult.IsValid
+                    }),
+                    RunID = runId.ToString(),
+                    Geometry = null
+                };
+
+                qcErrors.Add(qcError);
+            }
+
+            return qcErrors;
+        }
+
+        /// <summary>
+        /// 스키마 검수 결과를 QcError로 변환
+        /// </summary>
+        private List<QcError> ConvertSchemaValidationItem(SchemaValidationItem schemaResult, Guid runId)
+        {
+            var qcErrors = new List<QcError>();
+
+            // 스키마 검수에서 오류가 있는 경우만 QcError 생성
+            if (!schemaResult.IsValid)
+            {
+                var schemaRuleId = "LOG_CNC_SCH_001";
+                var qcError = new QcError
+                {
+                    GlobalID = Guid.NewGuid().ToString(),
+                    ErrType = QcErrorType.SCHEMA.ToString(),
+                    ErrCode = ResolveErrCode(schemaRuleId, "SCH", schemaResult.ColumnName ?? "Unknown"),
+                    Severity = QcSeverity.MAJOR.ToString(),
+                    Status = QcStatus.OPEN.ToString(),
+                    RuleId = schemaRuleId, // 필수 컬럼 누락 표준 ID
+                    TableId = schemaResult.TableId ?? string.Empty,
+                    TableName = !string.IsNullOrWhiteSpace(schemaResult.TableName) ? schemaResult.TableName : schemaResult.TableId ?? string.Empty,
+                    SourceClass = !string.IsNullOrWhiteSpace(schemaResult.TableName) ? schemaResult.TableName : schemaResult.TableId ?? "Unknown",
+                    SourceOID = 0, // 스키마 검수는 특정 객체 없음
+                    SourceGlobalID = null,
+                    Message = $"스키마 검수 실패: {schemaResult.TableId}.{schemaResult.ColumnName}",
+                    DetailsJSON = JsonSerializer.Serialize(new
+                    {
+                        CheckType = "스키마 검수",
+                        TableId = schemaResult.TableId,
+                        ColumnName = schemaResult.ColumnName,
+                        ColumnKoreanName = schemaResult.ColumnKoreanName,  // FieldAlias (한글 컬럼명)
+                        ExpectedDataType = schemaResult.ExpectedDataType,
+                        ActualDataType = schemaResult.ActualDataType,
+                        ExpectedLength = schemaResult.ExpectedLength,
+                        ActualLength = schemaResult.ActualLength,
+                        ColumnExists = schemaResult.ColumnExists,
+                        DataTypeMatches = schemaResult.DataTypeMatches,
+                        LengthMatches = schemaResult.LengthMatches,
+                        NotNullMatches = schemaResult.NotNullMatches,
+                        UniqueKeyMatches = schemaResult.UniqueKeyMatches,
+                        ForeignKeyMatches = schemaResult.ForeignKeyMatches
+                    }),
+                    RunID = runId.ToString(),
+                    Geometry = null
+                };
+
+                qcErrors.Add(qcError);
+            }
+
+            return qcErrors;
+        }
+
+        /// <summary>
+        /// 지오메트리 검수 결과를 QcError로 변환
+        /// </summary>
+        private List<QcError> ConvertGeometryValidationItem(GeometryValidationItem geometryResult, Guid runId)
+        {
+            var qcErrors = new List<QcError>();
+
+            // 지오메트리 검수에서 오류가 있는 경우 각 오류별로 QcError 생성
+            if (geometryResult.ErrorDetails != null)
+            {
+                foreach (var errorDetail in geometryResult.ErrorDetails)
+                {
+                    // WKT로부터 Geometry 객체 생성
+                    Geometry? geometry = null;
+                    if (!string.IsNullOrWhiteSpace(errorDetail.GeometryWkt))
+                    {
+                        try
+                        {
+                            string wkt = errorDetail.GeometryWkt;
+                            geometry = Ogr.CreateGeometryFromWkt(ref wkt, null);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "WKT로부터 지오메트리 생성 실패: {Wkt}", errorDetail.GeometryWkt);
+                        }
+                    }
+
+                    // 좌표/WKT 보완을 위해 사전 계산
+                    double outX = errorDetail.X;
+                    double outY = errorDetail.Y;
+                    if ((outX == 0 && outY == 0) && geometry != null)
+                    {
+                        try
+                        {
+                            // 지오메트리 타입에 따른 대표 좌표 추출 (폴리곤은 내부 보장 PointOnSurface)
+                            var flattened = (wkbGeometryType)((int)geometry.GetGeometryType() & 0xFF);
+                            switch (flattened)
+                            {
+                                case wkbGeometryType.wkbPoint:
+                                {
+                                    var p = new double[3];
+                                    geometry.GetPoint(0, p);
+                                    outX = p[0]; outY = p[1];
+                                    break;
+                                }
+                                case wkbGeometryType.wkbMultiPoint:
+                                {
+                                    if (geometry.GetGeometryCount() > 0)
+                                    {
+                                        var first = geometry.GetGeometryRef(0);
+                                        if (first != null)
+                                        {
+                                            var p = new double[3];
+                                            first.GetPoint(0, p);
+                                            outX = p[0]; outY = p[1];
+                                        }
+                                    }
+                                    break;
+                                }
+                                case wkbGeometryType.wkbLineString:
+                                {
+                                    if (geometry.GetPointCount() > 0)
+                                    {
+                                        var p = new double[3];
+                                        geometry.GetPoint(0, p);
+                                        outX = p[0]; outY = p[1];
+                                    }
+                                    break;
+                                }
+                                case wkbGeometryType.wkbMultiLineString:
+                                {
+                                    if (geometry.GetGeometryCount() > 0)
+                                    {
+                                        var firstLine = geometry.GetGeometryRef(0);
+                                        if (firstLine != null && firstLine.GetPointCount() > 0)
+                                        {
+                                            var p = new double[3];
+                                            firstLine.GetPoint(0, p);
+                                            outX = p[0]; outY = p[1];
+                                        }
+                                    }
+                                    break;
+                                }
+                                case wkbGeometryType.wkbPolygon:
+                                {
+                                    try
+                                    {
+                                        using var pos = geometry.PointOnSurface();
+                                        if (pos != null && !pos.IsEmpty())
+                                        {
+                                            var p = new double[3];
+                                            pos.GetPoint(0, p);
+                                            outX = p[0]; outY = p[1];
+                                            break;
+                                        }
+                                    }
+                                    catch { /* PointOnSurface 미지원 시 폴백 */ }
+
+                                    if (geometry.GetGeometryCount() > 0)
+                                    {
+                                        var ring = geometry.GetGeometryRef(0);
+                                        if (ring != null && ring.GetPointCount() > 0)
+                                        {
+                                            var p = new double[3];
+                                            ring.GetPoint(0, p);
+                                            outX = p[0]; outY = p[1];
+                                        }
+                                    }
+                                    break;
+                                }
+                                case wkbGeometryType.wkbMultiPolygon:
+                                {
+                                    try
+                                    {
+                                        using var pos = geometry.PointOnSurface();
+                                        if (pos != null && !pos.IsEmpty())
+                                        {
+                                            var p = new double[3];
+                                            pos.GetPoint(0, p);
+                                            outX = p[0]; outY = p[1];
+                                            break;
+                                        }
+                                    }
+                                    catch { /* PointOnSurface 미지원 시 폴백 */ }
+
+                                    if (geometry.GetGeometryCount() > 0)
+                                    {
+                                        var poly = geometry.GetGeometryRef(0);
+                                        if (poly != null && poly.GetGeometryCount() > 0)
+                                        {
+                                            var ring = poly.GetGeometryRef(0);
+                                            if (ring != null && ring.GetPointCount() > 0)
+                                            {
+                                                var p = new double[3];
+                                                ring.GetPoint(0, p);
+                                                outX = p[0]; outY = p[1];
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                                default:
+                                {
+                                    var env = new Envelope();
+                                    geometry.GetEnvelope(env);
+                                    outX = (env.MinX + env.MaxX) / 2.0;
+                                    outY = (env.MinY + env.MaxY) / 2.0;
+                                    break;
+                                }
+                            }
+                        }
+                        catch { /* 좌표 보완 실패 시 무시 */ }
+                    }
+
+                    // 좌표가 있으면 Point로 표시, 없으면 원본 지오메트리 사용
+                    bool hasValidCoordinates = (outX != 0 || outY != 0);
+
+                    var candidateRuleId = IsStandardRuleId(errorDetail.ErrorType)
+                        ? errorDetail.ErrorType!
+                        : $"GEOMETRY_CHECK_{geometryResult.TableId}_{errorDetail.ErrorType}";
+
+                    var qcError = new QcError
+                    {
+                        GlobalID = Guid.NewGuid().ToString(),
+                        ErrType = QcErrorType.GEOM.ToString(),
+                        ErrCode = ResolveErrCode(candidateRuleId, "GEO", errorDetail.ErrorType ?? "Unknown"),
+                        Severity = string.Empty,
+                        Status = string.Empty,
+                        RuleId = candidateRuleId,
+                        TableId = geometryResult.TableId ?? string.Empty,
+                        TableName = geometryResult.TableName ?? string.Empty,
+                        SourceClass = geometryResult.TableId ?? "Unknown",
+                        SourceOID = ParseSourceOID(errorDetail.ObjectId),
+                        SourceGlobalID = null,
+                        Message = errorDetail.DetailMessage ?? "지오메트리 오류",
+                        DetailsJSON = JsonSerializer.Serialize(new
+                        {
+                            CheckType = "지오메트리 검수",
+                            TableId = geometryResult.TableId,
+                            CheckType_Detail = geometryResult.CheckType,
+                            ErrorType = errorDetail.ErrorType,
+                            ObjectId = errorDetail.ObjectId,
+                            ErrorValue = errorDetail.ErrorValue,
+                            ThresholdValue = errorDetail.ThresholdValue,
+                            DetailMessage = errorDetail.DetailMessage,
+                            OriginalGeometryWKT = errorDetail.GeometryWkt // 원본 지오메트리는 상세정보에 보존
+                        }),
+                        RunID = runId.ToString(),
+                        // 좌표가 있으면 Point만 저장, 없으면 원본 지오메트리 저장
+                        Geometry = hasValidCoordinates ? null : geometry,
+                        GeometryWKT = hasValidCoordinates
+                            ? QcError.CreatePointWKT(outX, outY)
+                            : errorDetail.GeometryWkt,
+                        GeometryType = hasValidCoordinates
+                            ? "Point"
+                            : QcError.DetermineGeometryType(errorDetail.GeometryWkt),
+                        X = outX,
+                        Y = outY,
+                        ErrorValue = errorDetail.ErrorValue,
+                        ThresholdValue = errorDetail.ThresholdValue
+                    };
+
+                    qcErrors.Add(qcError);
+                }
+            }
+
+            return qcErrors;
+        }
+
+        /// <summary>
+        /// 관계 검수 결과를 QcError로 변환
+        /// </summary>
+        private List<QcError> ConvertRelationCheckResult(CheckResult checkResult, Guid runId)
+        {
+            var qcErrors = new List<QcError>();
+
+            foreach (var error in checkResult.Errors)
+            {
+                var relationRuleId = IsStandardRuleId(checkResult.CheckId)
+                    ? checkResult.CheckId
+                    : $"RELATION_CHECK_{checkResult.CheckId}";
+
+                // 관련 테이블 정보 추출
+                var relatedTableId = error.TargetTable 
+                    ?? error.Metadata?.GetValueOrDefault("RelatedTableId")?.ToString()
+                    ?? error.Metadata?.GetValueOrDefault("RelatedTable")?.ToString();
+                var relatedTableName = error.Metadata?.GetValueOrDefault("RelatedTableName")?.ToString();
+
+                var qcError = new QcError
+                {
+                    GlobalID = Guid.NewGuid().ToString(),
+                    ErrType = QcErrorType.REL.ToString(),
+                    ErrCode = ResolveErrCode(checkResult.CheckId, "REL", checkResult.CheckId),
+                    Severity = string.Empty,
+                    Status = string.Empty,
+                    RuleId = relationRuleId,
+                    TableId = error.TableId ?? error.SourceTable ?? string.Empty,
+                    TableName = error.TableName ?? string.Empty,
+                    SourceClass = error.TableId ?? error.SourceTable ?? "Unknown",
+                    SourceOID = ParseSourceOID(error.FeatureId),
+                    SourceGlobalID = null,
+                    RelatedTableId = relatedTableId,
+                    RelatedTableName = relatedTableName,
+                    Message = error.Message,
+                    DetailsJSON = JsonSerializer.Serialize(new
+                    {
+                        CheckType = "관계 검수",
+                        CheckName = checkResult.CheckName,
+                        ErrorSeverity = error.Severity.ToString(),
+                        Location = error.Location,
+                        RelatedTable = relatedTableId,
+                        RelatedTableName = relatedTableName,
+                        RelatedFeatureId = error.Metadata?.GetValueOrDefault("RelatedFeatureId"),
+                        RelationType = error.Metadata?.GetValueOrDefault("RelationType"),
+                        Metadata = error.Metadata
+                    }),
+                    RunID = runId.ToString(),
+                    Geometry = CreateGeometryFromLocation(error.Location)
+                };
+
+                qcErrors.Add(qcError);
+            }
+
+            return qcErrors;
+        }
+
+        /// <summary>
+        /// 표준 RuleId가 있으면 그대로 ErrCode로 사용하고, 없으면 접두사 기반 해시 코드를 생성
+        /// </summary>
+        private string ResolveErrCode(string? candidateRuleId, string fallbackPrefix, string? fallbackKey)
+        {
+            if (!string.IsNullOrWhiteSpace(candidateRuleId))
+            {
+                return candidateRuleId!;
+            }
+
+            return GenerateErrorCode(fallbackPrefix, fallbackKey ?? "Unknown");
+        }
+
+        /// <summary>
+        /// 오류 코드 생성 (레거시 해시 방식)
+        /// </summary>
+        private string GenerateErrorCode(string prefix, string checkId)
+        {
+            var hash = Math.Abs(checkId.GetHashCode()) % 1000;
+            return $"{prefix}{hash:D3}";
+        }
+
+        private static bool IsStandardRuleId(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            return value.StartsWith("LOG_", StringComparison.OrdinalIgnoreCase)
+                || value.StartsWith("COM_", StringComparison.OrdinalIgnoreCase)
+                || value.StartsWith("THE_", StringComparison.OrdinalIgnoreCase)
+                || value.StartsWith("POS_", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// 심각도 결정
+        /// </summary>
+        private QcSeverity DetermineSeverity(ErrorSeverity errorSeverity)
+        {
+            return errorSeverity switch
+            {
+                ErrorSeverity.Critical => QcSeverity.CRIT,
+                ErrorSeverity.Error => QcSeverity.MAJOR,
+                ErrorSeverity.Warning => QcSeverity.MINOR,
+                ErrorSeverity.Info => QcSeverity.INFO,
+                _ => QcSeverity.MINOR
+            };
+        }
+
+        /// <summary>
+        /// FeatureId에서 SourceOID 파싱
+        /// </summary>
+        private long ParseSourceOID(string? featureId)
+        {
+            if (string.IsNullOrEmpty(featureId))
+                return 0;
+
+            // "OBJ_12345" 형태에서 숫자 부분 추출
+            if (featureId.StartsWith("OBJ_"))
+            {
+                if (long.TryParse(featureId.Substring(4), out long oid))
+                    return oid;
+            }
+
+            // 순수 숫자인 경우
+            if (long.TryParse(featureId, out long directOid))
+                return directOid;
+
+            return 0;
+        }
+
+        /// <summary>
+        /// GeographicLocation에서 GDAL Geometry 생성
+        /// </summary>
+        private Geometry? CreateGeometryFromLocation(GeographicLocation? location)
+        {
+            if (location == null)
+                return null;
+
+            try
+            {
+                var point = new Geometry(wkbGeometryType.wkbPoint);
+                point.AddPoint(location.X, location.Y, location.Z);
+                return point;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "지오메트리 생성 실패: {Location}", location);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// QcRun 객체 생성
+        /// </summary>
+        /// <param name="validationResult">검수 결과</param>
+        /// <param name="targetFilePath">대상 파일 경로</param>
+        /// <param name="executedBy">실행자</param>
+        /// <returns>QcRun 객체</returns>
+        public QcRun CreateQcRun(ValidationResult validationResult, string targetFilePath, string? executedBy = null)
+        {
+            var qcRun = new QcRun
+            {
+                GlobalID = Guid.NewGuid().ToString(),
+                RunName = $"검수_{DateTime.Now:yyyyMMdd_HHmmss}",
+                TargetFilePath = targetFilePath,
+                RulesetVersion = "1.0",
+                StartTimeUTC = validationResult.StartedAt,
+                EndTimeUTC = validationResult.CompletedAt,
+                ExecutedBy = executedBy ?? Environment.UserName,
+                Status = DetermineRunStatus(validationResult.Status).ToString(),
+                TotalErrors = validationResult.TotalErrors,
+                TotalWarnings = validationResult.TotalWarnings,
+                ResultSummary = JsonSerializer.Serialize(new
+                {
+                    ValidationId = validationResult.ValidationId,
+                    TargetFile = Path.GetFileName(validationResult.TargetFile ?? "Unknown"),
+                    TableCheckErrors = validationResult.TableCheckResult?.ErrorCount ?? 0,
+                    SchemaCheckErrors = validationResult.SchemaCheckResult?.ErrorCount ?? 0,
+                    GeometryCheckErrors = validationResult.GeometryCheckResult?.ErrorCount ?? 0,
+                    RelationCheckErrors = validationResult.RelationCheckResult?.ErrorCount ?? 0
+                }),
+                ConfigInfo = JsonSerializer.Serialize(new
+                {
+                    TableCheckEnabled = validationResult.TableCheckResult != null,
+                    SchemaCheckEnabled = validationResult.SchemaCheckResult != null,
+                    GeometryCheckEnabled = validationResult.GeometryCheckResult != null,
+                    RelationCheckEnabled = validationResult.RelationCheckResult != null
+                })
+            };
+
+            return qcRun;
+        }
+
+        /// <summary>
+        /// ValidationStatus를 QcRunStatus로 변환
+        /// </summary>
+        private QcRunStatus DetermineRunStatus(ValidationStatus validationStatus)
+        {
+            return validationStatus switch
+            {
+                ValidationStatus.Running => QcRunStatus.RUNNING,
+                ValidationStatus.Completed => QcRunStatus.COMPLETED,
+                ValidationStatus.Failed => QcRunStatus.FAILED,
+                ValidationStatus.Cancelled => QcRunStatus.CANCELLED,
+                _ => QcRunStatus.COMPLETED
+            };
+        }
+
+        /// <summary>
+        /// CheckResult의 ValidationError들을 QcError로 변환합니다 (비지오메트리 일반용)
+        /// </summary>
+        public List<QcError> ToQcErrorsFromCheckResult(CheckResult? checkResult, string errType, string runId)
+        {
+            var list = new List<QcError>();
+            if (checkResult == null || checkResult.Errors == null || checkResult.Errors.Count == 0)
+            {
+                return list;
+            }
+
+            foreach (var e in checkResult.Errors)
+            {
+                var sourceClass = !string.IsNullOrWhiteSpace(e.TableName)
+                    ? e.TableName
+                    : (!string.IsNullOrWhiteSpace(e.SourceTable) ? e.SourceTable! : (e.TargetTable ?? ""));
+
+                long sourceOid = 0;
+                if (e.SourceObjectId.HasValue) sourceOid = e.SourceObjectId.Value;
+                else if (!string.IsNullOrWhiteSpace(e.FeatureId) && long.TryParse(e.FeatureId, out var parsed)) sourceOid = parsed;
+
+                var candidateRuleId = IsStandardRuleId(e.ErrorCode)
+                    ? e.ErrorCode!
+                    : $"{errType}_{e.ErrorCode ?? e.ErrorType.ToString()}";
+
+                var details = new Dictionary<string, object?>
+                {
+                    ["FieldName"] = e.FieldName,
+                    ["ActualValue"] = e.ActualValue,
+                    ["ExpectedValue"] = e.ExpectedValue,
+                    ["TargetTable"] = e.TargetTable,
+                    ["TargetObjectId"] = e.TargetObjectId,
+                    ["ErrorCode"] = e.ErrorCode,
+                    ["Severity"] = e.Severity.ToString(),
+                    ["ErrorTypeEnum"] = e.ErrorType.ToString(),
+                    ["OccurredAt"] = e.OccurredAt,
+                    ["Metadata"] = e.Metadata,
+                    ["Details"] = e.Details
+                };
+
+                // TableId, TableName 추출
+                var tableId = e.TableId ?? e.SourceTable ?? string.Empty;
+                var tableName = e.TableName ?? string.Empty;
+                
+                // RelatedTableId, RelatedTableName 추출
+                var relatedTableId = e.TargetTable 
+                    ?? e.Metadata?.GetValueOrDefault("RelatedTableId")?.ToString()
+                    ?? e.Metadata?.GetValueOrDefault("RelatedTable")?.ToString()
+                    ?? string.Empty;
+                var relatedTableName = e.Metadata?.GetValueOrDefault("RelatedTableName")?.ToString() ?? string.Empty;
+
+                var qc = new QcError
+                {
+                    GlobalID = Guid.NewGuid().ToString(),
+                    ErrType = errType,
+                    ErrCode = ResolveErrCode(candidateRuleId, errType, e.ErrorCode ?? e.ErrorType.ToString()),
+                    Severity = DetermineSeverity(e.Severity).ToString(),
+                    Status = QcStatus.OPEN.ToString(),
+                    // RuleId 생성 로직 개선: 표준 RuleId는 그대로 사용
+                    RuleId = candidateRuleId,
+                    TableId = tableId,
+                    TableName = tableName,
+                    SourceClass = sourceClass,
+                    SourceOID = sourceOid,
+                    SourceGlobalID = null,
+                    RelatedTableId = relatedTableId,
+                    RelatedTableName = relatedTableName,
+                    X = e.X ?? 0,
+                    Y = e.Y ?? 0,
+                    GeometryWKT = e.GeometryWKT,
+                    GeometryType = QcError.DetermineGeometryType(e.GeometryWKT),
+                    Geometry = null,
+                    ErrorValue = e.ActualValue ?? string.Empty,
+                    ThresholdValue = e.ExpectedValue ?? string.Empty,
+                    Message = e.Message,
+                    DetailsJSON = JsonSerializer.Serialize(details),
+                    RunID = runId,
+                    CreatedUTC = DateTime.UtcNow,
+                    UpdatedUTC = DateTime.UtcNow
+                };
+
+                list.Add(qc);
+            }
+
+            return list;
+        }
+
+        /// <summary>
+        /// 전체 ValidationResult에서 비지오메트리 QcError 목록 생성
+        /// (FileGDB/테이블/스키마/관계/속성관계)
+        /// </summary>
+        public List<QcError> ToQcErrorsFromNonGeometryStages(ValidationResult validationResult, string runId)
+        {
+            var all = new List<QcError>();
+
+            all.AddRange(ToQcErrorsFromCheckResult(validationResult.FileGdbCheckResult, "FILEGDB", runId));
+            all.AddRange(ToQcErrorsFromCheckResult(validationResult.TableCheckResult, "TABLE", runId));
+            all.AddRange(ToQcErrorsFromCheckResult(validationResult.SchemaCheckResult, "SCHEMA", runId));
+            all.AddRange(ToQcErrorsFromCheckResult(validationResult.RelationCheckResult, "REL", runId));
+            all.AddRange(ToQcErrorsFromCheckResult(validationResult.AttributeRelationCheckResult, "ATTR_REL", runId));
+
+            return all;
+        }
+    }
+}
+

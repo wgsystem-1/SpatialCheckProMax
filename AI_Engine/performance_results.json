@@ -1,0 +1,178 @@
+[
+  {
+    "name": "Geometry Generation",
+    "success": true,
+    "error": null,
+    "iterations": 5,
+    "avg_time_ms": 121.07035998487845,
+    "min_time_ms": 83.48869998008013,
+    "max_time_ms": 268.0364999687299,
+    "std_time_ms": 73.48642056096081,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "AI Model Inference (batch=1, vertices=100)",
+    "success": true,
+    "error": null,
+    "iterations": 100,
+    "avg_time_ms": 1.1882899998454377,
+    "min_time_ms": 0.7333999965339899,
+    "max_time_ms": 11.074000038206577,
+    "std_time_ms": 1.2897076775025924,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "AI Model Inference (batch=1, vertices=100)",
+    "success": true,
+    "error": null,
+    "iterations": 50,
+    "avg_time_ms": 0.9227280027698725,
+    "min_time_ms": 0.7469999836757779,
+    "max_time_ms": 2.4870000197552145,
+    "std_time_ms": 0.3448935350856236,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "AI Model Inference (batch=2, vertices=100)",
+    "success": true,
+    "error": null,
+    "iterations": 50,
+    "avg_time_ms": 1.3688399968668818,
+    "min_time_ms": 1.0501999640837312,
+    "max_time_ms": 4.786200006492436,
+    "std_time_ms": 0.7654997821703557,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "AI Model Inference (batch=4, vertices=100)",
+    "success": true,
+    "error": null,
+    "iterations": 50,
+    "avg_time_ms": 3.0526579974684864,
+    "min_time_ms": 1.8134000129066408,
+    "max_time_ms": 14.894799969624728,
+    "std_time_ms": 2.258328341921603,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "AI Model Inference (batch=8, vertices=100)",
+    "success": true,
+    "error": null,
+    "iterations": 50,
+    "avg_time_ms": 6.591182007687166,
+    "min_time_ms": 3.5959999659098685,
+    "max_time_ms": 25.832900020759553,
+    "std_time_ms": 4.112783595106742,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "AI Model Inference (batch=16, vertices=100)",
+    "success": true,
+    "error": null,
+    "iterations": 50,
+    "avg_time_ms": 12.062810000497848,
+    "min_time_ms": 7.360000046901405,
+    "max_time_ms": 22.998500033281744,
+    "std_time_ms": 4.093818193083529,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "AI Model Inference (batch=32, vertices=100)",
+    "success": true,
+    "error": null,
+    "iterations": 50,
+    "avg_time_ms": 24.22160200192593,
+    "min_time_ms": 15.062400023452938,
+    "max_time_ms": 78.97209998918697,
+    "std_time_ms": 10.006513969713515,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "AI Model Inference (batch=1, vertices=10)",
+    "success": true,
+    "error": null,
+    "iterations": 50,
+    "avg_time_ms": 1.2379800039343536,
+    "min_time_ms": 0.7398999878205359,
+    "max_time_ms": 4.116100026294589,
+    "std_time_ms": 0.705836259062288,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "AI Model Inference (batch=1, vertices=50)",
+    "success": true,
+    "error": null,
+    "iterations": 50,
+    "avg_time_ms": 1.0202200000640005,
+    "min_time_ms": 0.7223000284284353,
+    "max_time_ms": 5.840099998749793,
+    "std_time_ms": 0.7856469340734837,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "AI Model Inference (batch=1, vertices=100)",
+    "success": true,
+    "error": null,
+    "iterations": 50,
+    "avg_time_ms": 0.9753439971245825,
+    "min_time_ms": 0.7863999926485121,
+    "max_time_ms": 3.349200007505715,
+    "std_time_ms": 0.43073077760802464,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "AI Model Inference (batch=1, vertices=200)",
+    "success": true,
+    "error": null,
+    "iterations": 50,
+    "avg_time_ms": 0.9006339975167066,
+    "min_time_ms": 0.7378999725915492,
+    "max_time_ms": 2.2382999886758626,
+    "std_time_ms": 0.3016947530430109,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "AI Model Inference (batch=1, vertices=300)",
+    "success": true,
+    "error": null,
+    "iterations": 50,
+    "avg_time_ms": 0.9448320046067238,
+    "min_time_ms": 0.7661999552510679,
+    "max_time_ms": 1.9055999582633376,
+    "std_time_ms": 0.2698558069623762,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "AI Model Inference (batch=1, vertices=400)",
+    "success": true,
+    "error": null,
+    "iterations": 50,
+    "avg_time_ms": 0.9155759995337576,
+    "min_time_ms": 0.734899949748069,
+    "max_time_ms": 1.5857000253163278,
+    "std_time_ms": 0.23841248105278723,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "AI Model Inference (batch=1, vertices=500)",
+    "success": true,
+    "error": null,
+    "iterations": 50,
+    "avg_time_ms": 1.2752600014209747,
+    "min_time_ms": 0.7875000010244548,
+    "max_time_ms": 6.429300003219396,
+    "std_time_ms": 0.9262634114629344,
+    "memory_used_mb": 0.0
+  },
+  {
+    "name": "PyTorch Training (5 epochs)",
+    "success": false,
+    "error": "'coordinates'",
+    "iterations": 0,
+    "avg_time_ms": 0,
+    "min_time_ms": 0,
+    "max_time_ms": 0,
+    "std_time_ms": 0,
+    "memory_used_mb": 0.0
+  }
+]
