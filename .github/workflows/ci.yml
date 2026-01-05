@@ -106,7 +106,7 @@ jobs:
         Compress-Archive -Path ./publish/GUI-${{ matrix.runtime }}/* -DestinationPath SpatialCheckProMax-GUI-${{ matrix.runtime }}.zip
 
     - name: Upload GUI artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: SpatialCheckProMax-GUI-${{ matrix.runtime }}
         path: SpatialCheckProMax-GUI-${{ matrix.runtime }}.zip
@@ -150,7 +150,7 @@ jobs:
         Compress-Archive -Path ./publish/API-${{ matrix.runtime }}/* -DestinationPath SpatialCheckProMax-API-${{ matrix.runtime }}.zip
 
     - name: Upload API artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: SpatialCheckProMax-API-${{ matrix.runtime }}
         path: SpatialCheckProMax-API-${{ matrix.runtime }}.zip
