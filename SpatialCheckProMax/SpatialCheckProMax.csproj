@@ -54,8 +54,8 @@
   <ItemGroup>
     <!-- 핵심 비즈니스 로직 패키지 -->
     <PackageReference Include="CsvHelper" Version="33.1.0" />
-    <PackageReference Include="MaxRev.Gdal.Core" Version="3.10.0.306" />
-    <PackageReference Include="MaxRev.Gdal.WindowsRuntime.Minimal" Version="3.10.0.306" />
+    <PackageReference Include="MaxRev.Gdal.Core" Version="3.12.1.440" />
+    <PackageReference Include="MaxRev.Gdal.WindowsRuntime.Minimal" Version="3.12.1.440" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite.NetTopologySuite" Version="9.0.10" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.10" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="9.0.4" />
